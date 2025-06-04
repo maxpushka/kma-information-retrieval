@@ -13,3 +13,4 @@ clap = { version = "4.4", features = ["derive"] }
 walkdir = "2.4"
 indicatif = "0.17"
 rayon = "1.8"
+bit-vec = { version = "0.6", features = ["serde"] }
