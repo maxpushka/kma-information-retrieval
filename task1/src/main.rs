@@ -156,31 +156,96 @@ impl IncidenceMatrix {
     }
     
     pub fn search(&self, query: &str) -> Result<BitVec, String> {
-        let query = query.to_lowercase();
+        let tokens = self.tokenize(&query.to_lowercase())?;
+        let mut pos = 0;
+        self.parse_or_expr(&tokens, &mut pos)
+    }
+    
+    fn tokenize(&self, query: &str) -> Result<Vec<String>, String> {
+        let mut tokens = Vec::new();
+        let mut current_token = String::new();
+        let mut chars = query.chars().peekable();
         
-        if query.contains(" and ") {
-            let parts: Vec<&str> = query.split(" and ").collect();
-            let mut result = self.search_term(parts[0].trim())?;
-            for part in &parts[1..] {
-                let term_result = self.search_term(part.trim())?;
-                result.and(&term_result);
+        while let Some(ch) = chars.next() {
+            match ch {
+                '(' | ')' => {
+                    if !current_token.is_empty() {
+                        tokens.push(current_token.trim().to_string());
+                        current_token.clear();
+                    }
+                    tokens.push(ch.to_string());
+                }
+                ' ' => {
+                    if !current_token.is_empty() {
+                        tokens.push(current_token.trim().to_string());
+                        current_token.clear();
+                    }
+                }
+                _ => {
+                    current_token.push(ch);
+                }
             }
-            Ok(result)
-        } else if query.contains(" or ") {
-            let parts: Vec<&str> = query.split(" or ").collect();
-            let mut result = self.search_term(parts[0].trim())?;
-            for part in &parts[1..] {
-                let term_result = self.search_term(part.trim())?;
-                result.or(&term_result);
-            }
-            Ok(result)
-        } else if query.starts_with("not ") {
-            let term = query.strip_prefix("not ").unwrap().trim();
-            let mut result = self.search_term(term)?;
+        }
+        
+        if !current_token.is_empty() {
+            tokens.push(current_token.trim().to_string());
+        }
+        
+        Ok(tokens)
+    }
+    
+    fn parse_or_expr(&self, tokens: &[String], pos: &mut usize) -> Result<BitVec, String> {
+        let mut result = self.parse_and_expr(tokens, pos)?;
+        
+        while *pos < tokens.len() && tokens[*pos] == "or" {
+            *pos += 1;
+            let right = self.parse_and_expr(tokens, pos)?;
+            result.or(&right);
+        }
+        
+        Ok(result)
+    }
+    
+    fn parse_and_expr(&self, tokens: &[String], pos: &mut usize) -> Result<BitVec, String> {
+        let mut result = self.parse_not_expr(tokens, pos)?;
+        
+        while *pos < tokens.len() && tokens[*pos] == "and" {
+            *pos += 1;
+            let right = self.parse_not_expr(tokens, pos)?;
+            result.and(&right);
+        }
+        
+        Ok(result)
+    }
+    
+    fn parse_not_expr(&self, tokens: &[String], pos: &mut usize) -> Result<BitVec, String> {
+        if *pos < tokens.len() && tokens[*pos] == "not" {
+            *pos += 1;
+            let mut result = self.parse_primary(tokens, pos)?;
             result.negate();
             Ok(result)
         } else {
-            self.search_term(&query)
+            self.parse_primary(tokens, pos)
+        }
+    }
+    
+    fn parse_primary(&self, tokens: &[String], pos: &mut usize) -> Result<BitVec, String> {
+        if *pos >= tokens.len() {
+            return Err("Unexpected end of query".to_string());
+        }
+        
+        if tokens[*pos] == "(" {
+            *pos += 1;
+            let result = self.parse_or_expr(tokens, pos)?;
+            if *pos >= tokens.len() || tokens[*pos] != ")" {
+                return Err("Missing closing parenthesis".to_string());
+            }
+            *pos += 1;
+            Ok(result)
+        } else {
+            let term = &tokens[*pos];
+            *pos += 1;
+            self.search_term(term)
         }
     }
     
@@ -234,31 +299,96 @@ impl InvertedIndex {
     }
     
     pub fn search(&self, query: &str) -> Result<HashSet<String>, String> {
-        let query = query.to_lowercase();
+        let tokens = self.tokenize(&query.to_lowercase())?;
+        let mut pos = 0;
+        self.parse_or_expr(&tokens, &mut pos)
+    }
+    
+    fn tokenize(&self, query: &str) -> Result<Vec<String>, String> {
+        let mut tokens = Vec::new();
+        let mut current_token = String::new();
+        let mut chars = query.chars().peekable();
         
-        if query.contains(" and ") {
-            let parts: Vec<&str> = query.split(" and ").collect();
-            let mut result = self.search_term(parts[0].trim())?;
-            for part in &parts[1..] {
-                let term_result = self.search_term(part.trim())?;
-                result = result.intersection(&term_result).cloned().collect();
+        while let Some(ch) = chars.next() {
+            match ch {
+                '(' | ')' => {
+                    if !current_token.is_empty() {
+                        tokens.push(current_token.trim().to_string());
+                        current_token.clear();
+                    }
+                    tokens.push(ch.to_string());
+                }
+                ' ' => {
+                    if !current_token.is_empty() {
+                        tokens.push(current_token.trim().to_string());
+                        current_token.clear();
+                    }
+                }
+                _ => {
+                    current_token.push(ch);
+                }
             }
-            Ok(result)
-        } else if query.contains(" or ") {
-            let parts: Vec<&str> = query.split(" or ").collect();
-            let mut result = self.search_term(parts[0].trim())?;
-            for part in &parts[1..] {
-                let term_result = self.search_term(part.trim())?;
-                result = result.union(&term_result).cloned().collect();
-            }
-            Ok(result)
-        } else if query.starts_with("not ") {
-            let term = query.strip_prefix("not ").unwrap().trim();
-            let term_docs = self.search_term(term)?;
+        }
+        
+        if !current_token.is_empty() {
+            tokens.push(current_token.trim().to_string());
+        }
+        
+        Ok(tokens)
+    }
+    
+    fn parse_or_expr(&self, tokens: &[String], pos: &mut usize) -> Result<HashSet<String>, String> {
+        let mut result = self.parse_and_expr(tokens, pos)?;
+        
+        while *pos < tokens.len() && tokens[*pos] == "or" {
+            *pos += 1;
+            let right = self.parse_and_expr(tokens, pos)?;
+            result = result.union(&right).cloned().collect();
+        }
+        
+        Ok(result)
+    }
+    
+    fn parse_and_expr(&self, tokens: &[String], pos: &mut usize) -> Result<HashSet<String>, String> {
+        let mut result = self.parse_not_expr(tokens, pos)?;
+        
+        while *pos < tokens.len() && tokens[*pos] == "and" {
+            *pos += 1;
+            let right = self.parse_not_expr(tokens, pos)?;
+            result = result.intersection(&right).cloned().collect();
+        }
+        
+        Ok(result)
+    }
+    
+    fn parse_not_expr(&self, tokens: &[String], pos: &mut usize) -> Result<HashSet<String>, String> {
+        if *pos < tokens.len() && tokens[*pos] == "not" {
+            *pos += 1;
+            let result = self.parse_primary(tokens, pos)?;
             let all_docs: HashSet<String> = self.documents.iter().cloned().collect();
-            Ok(all_docs.difference(&term_docs).cloned().collect())
+            Ok(all_docs.difference(&result).cloned().collect())
         } else {
-            self.search_term(&query)
+            self.parse_primary(tokens, pos)
+        }
+    }
+    
+    fn parse_primary(&self, tokens: &[String], pos: &mut usize) -> Result<HashSet<String>, String> {
+        if *pos >= tokens.len() {
+            return Err("Unexpected end of query".to_string());
+        }
+        
+        if tokens[*pos] == "(" {
+            *pos += 1;
+            let result = self.parse_or_expr(tokens, pos)?;
+            if *pos >= tokens.len() || tokens[*pos] != ")" {
+                return Err("Missing closing parenthesis".to_string());
+            }
+            *pos += 1;
+            Ok(result)
+        } else {
+            let term = &tokens[*pos];
+            *pos += 1;
+            self.search_term(term)
         }
     }
     
