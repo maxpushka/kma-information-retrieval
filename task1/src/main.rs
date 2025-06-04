@@ -2,12 +2,14 @@ use clap::{Arg, Command};
 use indicatif::{ProgressBar, ProgressStyle};
 use quick_xml::events::Event;
 use quick_xml::Reader;
+use rayon::prelude::*;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufReader, Write};
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use walkdir::WalkDir;
 
@@ -45,6 +47,17 @@ impl Dictionary {
             entry.documents.push(document);
         }
         self.total_words += 1;
+    }
+
+    pub fn merge_terms(&mut self, terms: Vec<(String, String)>) {
+        for (term, document) in terms {
+            self.add_term(term, document);
+        }
+    }
+
+    pub fn add_file_stats(&mut self, file_size: u64) {
+        self.collection_size_bytes += file_size;
+        self.total_documents += 1;
     }
 
     pub fn dictionary_size(&self) -> usize {
@@ -170,8 +183,7 @@ pub fn build_dictionary(
     show_progress: bool,
 ) -> Result<Dictionary, Box<dyn std::error::Error>> {
     let mut dictionary = Dictionary::new();
-    let parser = FB2Parser::new();
-
+    
     let pb = if show_progress {
         let pb = ProgressBar::new(files.len() as u64);
         pb.set_style(
@@ -179,53 +191,86 @@ pub fn build_dictionary(
                 .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}")
                 .unwrap(),
         );
-        Some(pb)
+        Arc::new(Mutex::new(Some(pb)))
     } else {
-        None
+        Arc::new(Mutex::new(None))
     };
 
-    for file_path in files {
-        if let Some(ref pb) = pb {
-            pb.set_message(format!("Processing {}", file_path.display()));
-        }
-
-        let file_size = fs::metadata(file_path)?.len();
-        if file_size < 150_000 {
-            eprintln!(
-                "Warning: {} is smaller than 150KB ({} bytes)",
-                file_path.display(),
-                file_size
-            );
-            continue;
-        }
-
-        dictionary.collection_size_bytes += file_size;
-        dictionary.total_documents += 1;
-
-        let document_name = file_path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-
-        match parser.parse_file(file_path) {
-            Ok(words) => {
-                for word in words {
-                    dictionary.add_term(word, document_name.clone());
+    let pb_clone = Arc::clone(&pb);
+    
+    // Process files in parallel and collect results
+    let results: Vec<_> = files
+        .par_iter()
+        .map(|file_path| {
+            let parser = FB2Parser::new();
+            
+            // Update progress bar
+            if let Ok(pb_lock) = pb_clone.lock() {
+                if let Some(ref pb) = *pb_lock {
+                    pb.set_message(format!("Processing {}", file_path.display()));
                 }
             }
-            Err(e) => {
-                eprintln!("Error processing {}: {}", file_path.display(), e);
-            }
-        }
 
-        if let Some(ref pb) = pb {
-            pb.inc(1);
+            let file_size = match fs::metadata(file_path) {
+                Ok(metadata) => metadata.len(),
+                Err(e) => {
+                    eprintln!("Error reading metadata for {}: {}", file_path.display(), e);
+                    return None;
+                }
+            };
+
+            if file_size < 150_000 {
+                eprintln!(
+                    "Warning: {} is smaller than 150KB ({} bytes)",
+                    file_path.display(),
+                    file_size
+                );
+                return None;
+            }
+
+            let document_name = file_path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+
+            let words = match parser.parse_file(file_path) {
+                Ok(words) => words,
+                Err(e) => {
+                    eprintln!("Error processing {}: {}", file_path.display(), e);
+                    return None;
+                }
+            };
+
+            // Update progress bar
+            if let Ok(pb_lock) = pb_clone.lock() {
+                if let Some(ref pb) = *pb_lock {
+                    pb.inc(1);
+                }
+            }
+
+            Some((file_size, document_name, words))
+        })
+        .collect();
+
+    // Merge results into dictionary sequentially
+    for result in results {
+        if let Some((file_size, document_name, words)) = result {
+            dictionary.add_file_stats(file_size);
+            
+            let terms: Vec<(String, String)> = words
+                .into_iter()
+                .map(|word| (word, document_name.clone()))
+                .collect();
+            
+            dictionary.merge_terms(terms);
         }
     }
 
-    if let Some(pb) = pb {
-        pb.finish_with_message("Dictionary building completed");
+    if let Ok(pb_lock) = pb.lock() {
+        if let Some(ref pb) = *pb_lock {
+            pb.finish_with_message("Dictionary building completed");
+        }
     }
 
     Ok(dictionary)
@@ -307,8 +352,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Build time: {:.2?}", build_time);
 
     println!("\n=== COMPLEXITY ANALYSIS ===");
-    println!("Time complexity: O(n*m) where n = total words, m = average word length");
+    println!("Time complexity: O(n*m/p) where n = total words, m = avg word length, p = CPU cores");
     println!("Space complexity: O(k) where k = unique terms");
+    println!("Parallel processing: {} logical CPU cores", rayon::current_num_threads());
     println!("Dictionary compression ratio: {:.2}%", 
              (dictionary.dictionary_size() as f64 / dictionary.total_words as f64) * 100.0);
 
@@ -361,9 +407,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  - O(1) average lookup/insertion for terms");
     println!("  - Efficient memory usage with hash-based storage");
     println!("  - Supports frequency counting and document tracking");
-    println!("Parsing: SAX-like XML parsing with regex text extraction");
+    println!("Parsing: Parallel SAX-like XML parsing with regex text extraction");
     println!("  - Memory efficient streaming for large files");
     println!("  - Selective parsing (body content only)");
+    println!("  - Parallel processing of files using Rayon");
+    println!("  - Thread-safe progress reporting with Arc<Mutex<>>"); 
     println!("Serialization formats tested for space/time trade-offs");
 
     Ok(())
