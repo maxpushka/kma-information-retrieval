@@ -351,12 +351,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Dictionary size: {} unique terms", dictionary.dictionary_size());
     println!("Build time: {:.2?}", build_time);
 
-    println!("\n=== COMPLEXITY ANALYSIS ===");
-    println!("Time complexity: O(n*m/p) where n = total words, m = avg word length, p = CPU cores");
-    println!("Space complexity: O(k) where k = unique terms");
-    println!("Parallel processing: {} logical CPU cores", rayon::current_num_threads());
-    println!("Dictionary compression ratio: {:.2}%", 
-             (dictionary.dictionary_size() as f64 / dictionary.total_words as f64) * 100.0);
+    // println!("\n=== COMPLEXITY ANALYSIS ===");
+    // println!("Time complexity: O(n*m/p) where n = total words, m = avg word length, p = CPU cores");
+    // println!("Space complexity: O(k) where k = unique terms");
+    // println!("Parallel processing: {} logical CPU cores", rayon::current_num_threads());
+    // println!("Dictionary compression ratio: {:.2}%", 
+    //          (dictionary.dictionary_size() as f64 / dictionary.total_words as f64) * 100.0);
 
     println!("\n=== SAVING DICTIONARY ===");
     let mut format_sizes = Vec::new();
@@ -402,17 +402,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    println!("\n=== ALGORITHM JUSTIFICATION ===");
-    println!("Data Structure: HashMap<String, TermEntry>");
-    println!("  - O(1) average lookup/insertion for terms");
-    println!("  - Efficient memory usage with hash-based storage");
-    println!("  - Supports frequency counting and document tracking");
-    println!("Parsing: Parallel SAX-like XML parsing with regex text extraction");
-    println!("  - Memory efficient streaming for large files");
-    println!("  - Selective parsing (body content only)");
-    println!("  - Parallel processing of files using Rayon");
-    println!("  - Thread-safe progress reporting with Arc<Mutex<>>"); 
-    println!("Serialization formats tested for space/time trade-offs");
+    // println!("\n=== ALGORITHM JUSTIFICATION ===");
+    // println!("Data Structure: HashMap<String, TermEntry>");
+    // println!("  - O(1) average lookup/insertion for terms");
+    // println!("  - Efficient memory usage with hash-based storage");
+    // println!("  - Supports frequency counting and document tracking");
+    // println!("Parsing: Parallel SAX-like XML parsing with regex text extraction");
+    // println!("  - Memory efficient streaming for large files");
+    // println!("  - Selective parsing (body content only)");
+    // println!("  - Parallel processing of files using Rayon");
+    // println!("  - Thread-safe progress reporting with Arc<Mutex<>>"); 
+    // println!("Serialization formats tested for space/time trade-offs");
 
     Ok(())
 }
