@@ -60,21 +60,8 @@ impl TrigramIndex {
         TrigramIndex { index: final_index }
     }
 
-    fn add_term(&mut self, term: &str) {
-        let trigrams = self.generate_trigrams(term);
-        
-        for trigram in trigrams {
-            self.index.entry(trigram)
-                .or_insert_with(HashSet::new)
-                .insert(term.to_string());
-        }
-    }
-
-    fn generate_trigrams(&self, term: &str) -> Vec<String> {
-        Self::generate_trigrams_static(term)
-    }
     
-    fn generate_trigrams_static(term: &str) -> Vec<String> {
+    pub(crate) fn generate_trigrams_static(term: &str) -> Vec<String> {
         if term.len() < 3 {
             return vec![format!("$${}$$", term)];
         }
@@ -129,7 +116,7 @@ impl TrigramIndex {
     }
 
     fn find_exact_match(&self, pattern: &str) -> HashSet<String> {
-        let pattern_trigrams = self.generate_trigrams(pattern);
+        let pattern_trigrams = Self::generate_trigrams_static(pattern);
         let mut candidates: Option<HashSet<String>> = None;
         
         for trigram in pattern_trigrams {
@@ -270,8 +257,7 @@ mod tests {
 
     #[test]
     fn test_trigram_generation() {
-        let index = TrigramIndex::new();
-        let trigrams = index.generate_trigrams("hello");
+        let trigrams = TrigramIndex::generate_trigrams_static("hello");
         assert!(trigrams.contains(&"$$h".to_string()));
         assert!(trigrams.contains(&"$he".to_string()));
         assert!(trigrams.contains(&"hel".to_string()));

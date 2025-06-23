@@ -60,21 +60,9 @@ impl PermutationIndex {
         PermutationIndex { index: final_index }
     }
 
-    fn add_term(&mut self, term: &str) {
-        let rotations = self.generate_rotations(term);
-        
-        for rotation in rotations {
-            self.index.entry(rotation)
-                .or_insert_with(HashSet::new)
-                .insert(term.to_string());
-        }
-    }
 
-    fn generate_rotations(&self, term: &str) -> Vec<String> {
-        Self::generate_rotations_static(term)
-    }
-    
-    fn generate_rotations_static(term: &str) -> Vec<String> {
+    /// Generate rotations for a single term
+    pub(crate) fn generate_rotations_static(term: &str) -> Vec<String> {
         let mut rotations = Vec::new();
         let term_with_marker = format!("{}$", term);
         let chars: Vec<char> = term_with_marker.chars().collect();
