@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
+use rayon::prelude::*;
 use crate::Dictionary;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -15,20 +17,47 @@ impl TrigramIndex {
     }
 
     pub fn from_dictionary(dictionary: &Dictionary) -> Self {
-        println!("      TrigramIndex: Processing {} terms", dictionary.terms.len());
-        let mut trigram_index = TrigramIndex::new();
+        println!("      TrigramIndex: Processing {} terms in parallel", dictionary.terms.len());
         
-        let mut processed = 0;
-        for term in dictionary.terms.keys() {
-            trigram_index.add_term(term);
-            processed += 1;
-            if processed % 5000 == 0 {
-                println!("      TrigramIndex: Processed {} terms", processed);
+        let index = Arc::new(Mutex::new(HashMap::new()));
+        let terms: Vec<&String> = dictionary.terms.keys().collect();
+        
+        // Process terms in parallel chunks
+        let chunk_size = 1000;
+        let chunks: Vec<_> = terms.chunks(chunk_size).collect();
+        
+        chunks.par_iter().enumerate().for_each(|(chunk_idx, chunk)| {
+            let mut local_trigrams = HashMap::new();
+            
+            // Generate trigrams for this chunk locally (no mutex contention)
+            for term in *chunk {
+                let trigrams = Self::generate_trigrams_static(term);
+                for trigram in trigrams {
+                    local_trigrams.entry(trigram)
+                        .or_insert_with(HashSet::new)
+                        .insert(term.to_string());
+                }
             }
-        }
+            
+            // Merge local results into global index (minimal mutex time)
+            if let Ok(mut global_index) = index.lock() {
+                for (trigram, terms_set) in local_trigrams {
+                    global_index.entry(trigram)
+                        .or_insert_with(HashSet::new)
+                        .extend(terms_set);
+                }
+            }
+            
+            let processed = (chunk_idx + 1) * chunk_size;
+            if processed % 5000 == 0 || chunk_idx == chunks.len() - 1 {
+                println!("      TrigramIndex: Processed ~{} terms", processed.min(terms.len()));
+            }
+        });
         
-        println!("      TrigramIndex: Complete - {} terms, {} trigrams", processed, trigram_index.index.len());
-        trigram_index
+        let final_index = Arc::try_unwrap(index).unwrap().into_inner().unwrap();
+        println!("      TrigramIndex: Complete - {} terms, {} trigrams", terms.len(), final_index.len());
+        
+        TrigramIndex { index: final_index }
     }
 
     fn add_term(&mut self, term: &str) {
@@ -42,6 +71,10 @@ impl TrigramIndex {
     }
 
     fn generate_trigrams(&self, term: &str) -> Vec<String> {
+        Self::generate_trigrams_static(term)
+    }
+    
+    fn generate_trigrams_static(term: &str) -> Vec<String> {
         if term.len() < 3 {
             return vec![format!("$${}$$", term)];
         }

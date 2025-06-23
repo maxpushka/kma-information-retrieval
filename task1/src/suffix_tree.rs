@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
+use rayon::prelude::*;
 use crate::Dictionary;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,20 +34,34 @@ impl SuffixTree {
     }
 
     pub fn from_dictionary(dictionary: &Dictionary) -> Self {
-        println!("      SuffixTree: Processing {} terms", dictionary.terms.len());
-        let mut tree = SuffixTree::new();
+        println!("      SuffixTree: Processing {} terms in parallel", dictionary.terms.len());
         
-        let mut processed = 0;
-        for term in dictionary.terms.keys() {
-            tree.add_term(term);
-            processed += 1;
-            if processed % 5000 == 0 {
-                println!("      SuffixTree: Processed {} terms", processed);
+        let tree = Arc::new(Mutex::new(SuffixTree::new()));
+        let terms: Vec<&String> = dictionary.terms.keys().collect();
+        
+        // Process terms in parallel chunks for better progress reporting
+        let chunk_size = 1000;
+        let chunks: Vec<_> = terms.chunks(chunk_size).collect();
+        
+        chunks.par_iter().enumerate().for_each(|(chunk_idx, chunk)| {
+            let local_tree = Arc::clone(&tree);
+            
+            for term in *chunk {
+                if let Ok(mut tree_lock) = local_tree.lock() {
+                    tree_lock.add_term(term);
+                }
             }
-        }
+            
+            let processed = (chunk_idx + 1) * chunk_size;
+            if processed % 5000 == 0 || chunk_idx == chunks.len() - 1 {
+                println!("      SuffixTree: Processed ~{} terms", processed.min(terms.len()));
+            }
+        });
         
-        println!("      SuffixTree: Complete - {} terms processed", processed);
-        tree
+        println!("      SuffixTree: Complete - {} terms processed", terms.len());
+        
+        // Extract the tree from Arc<Mutex<>>
+        Arc::try_unwrap(tree).unwrap().into_inner().unwrap()
     }
 
     fn add_term(&mut self, term: &str) {

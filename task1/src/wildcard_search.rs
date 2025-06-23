@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use rayon::prelude::*;
 use crate::{Dictionary, InvertedIndex, SuffixTree, PermutationIndex, TrigramIndex, QueryParser};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -71,15 +72,31 @@ impl WildcardSearchEngine {
             return Ok(HashSet::new());
         }
 
-        let mut all_documents = HashSet::new();
+        // Parallelize document lookup for large term sets
+        let documents_sets: Vec<_> = if matching_terms.len() > 100 {
+            // For large result sets, use parallel processing
+            matching_terms.par_iter()
+                .filter_map(|term| {
+                    self.dictionary.terms.get(term).map(|entry| &entry.documents)
+                })
+                .map(|docs| docs.iter().cloned().collect::<HashSet<String>>())
+                .collect()
+        } else {
+            // For small result sets, sequential is faster due to overhead
+            matching_terms.iter()
+                .filter_map(|term| {
+                    self.dictionary.terms.get(term).map(|entry| &entry.documents)
+                })
+                .map(|docs| docs.iter().cloned().collect::<HashSet<String>>())
+                .collect()
+        };
         
-        for term in matching_terms {
-            if let Some(term_entry) = self.dictionary.terms.get(&term) {
-                for doc in &term_entry.documents {
-                    all_documents.insert(doc.clone());
-                }
-            }
-        }
+        // Union all document sets
+        let all_documents = documents_sets.into_iter()
+            .fold(HashSet::new(), |mut acc, docs| {
+                acc.extend(docs);
+                acc
+            });
         
         Ok(all_documents)
     }
@@ -100,17 +117,30 @@ impl WildcardSearchEngine {
                 }
             }
             WildcardComplexity::Medium => {
-                let suffix_results = self.suffix_tree.find_matching_terms(pattern);
-                let perm_results = self.permutation_index.find_matching_terms(pattern);
-                let trigram_results = self.trigram_index.find_matching_terms(pattern);
+                // Run multiple indices in parallel for medium complexity queries
+                let (suffix_and_perm, trigram_results) = rayon::join(
+                    || {
+                        let (suffix_results, perm_results) = rayon::join(
+                            || self.suffix_tree.find_matching_terms(pattern),
+                            || self.permutation_index.find_matching_terms(pattern)
+                        );
+                        (suffix_results, perm_results)
+                    },
+                    || self.trigram_index.find_matching_terms(pattern)
+                );
+                let (suffix_results, perm_results) = suffix_and_perm;
                 
+                // Find intersection of results for higher precision
                 let intersection: HashSet<String> = suffix_results
                     .intersection(&perm_results)
-                    .chain(perm_results.intersection(&trigram_results))
+                    .cloned()
+                    .collect::<HashSet<_>>()
+                    .intersection(&trigram_results)
                     .cloned()
                     .collect();
                 
                 if intersection.is_empty() {
+                    // If no intersection, use the trigram results (most comprehensive)
                     Ok(trigram_results)
                 } else {
                     Ok(intersection)

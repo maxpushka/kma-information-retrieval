@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
+use rayon::prelude::*;
 use crate::Dictionary;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -15,20 +17,47 @@ impl PermutationIndex {
     }
 
     pub fn from_dictionary(dictionary: &Dictionary) -> Self {
-        println!("      PermutationIndex: Processing {} terms", dictionary.terms.len());
-        let mut perm_index = PermutationIndex::new();
+        println!("      PermutationIndex: Processing {} terms in parallel", dictionary.terms.len());
         
-        let mut processed = 0;
-        for term in dictionary.terms.keys() {
-            perm_index.add_term(term);
-            processed += 1;
-            if processed % 5000 == 0 {
-                println!("      PermutationIndex: Processed {} terms", processed);
+        let index = Arc::new(Mutex::new(HashMap::new()));
+        let terms: Vec<&String> = dictionary.terms.keys().collect();
+        
+        // Process terms in parallel chunks
+        let chunk_size = 1000;
+        let chunks: Vec<_> = terms.chunks(chunk_size).collect();
+        
+        chunks.par_iter().enumerate().for_each(|(chunk_idx, chunk)| {
+            let mut local_rotations = HashMap::new();
+            
+            // Generate rotations for this chunk locally (no mutex contention)
+            for term in *chunk {
+                let rotations = Self::generate_rotations_static(term);
+                for rotation in rotations {
+                    local_rotations.entry(rotation)
+                        .or_insert_with(HashSet::new)
+                        .insert(term.to_string());
+                }
             }
-        }
+            
+            // Merge local results into global index (minimal mutex time)
+            if let Ok(mut global_index) = index.lock() {
+                for (rotation, terms_set) in local_rotations {
+                    global_index.entry(rotation)
+                        .or_insert_with(HashSet::new)
+                        .extend(terms_set);
+                }
+            }
+            
+            let processed = (chunk_idx + 1) * chunk_size;
+            if processed % 5000 == 0 || chunk_idx == chunks.len() - 1 {
+                println!("      PermutationIndex: Processed ~{} terms", processed.min(terms.len()));
+            }
+        });
         
-        println!("      PermutationIndex: Complete - {} terms, {} rotations", processed, perm_index.index.len());
-        perm_index
+        let final_index = Arc::try_unwrap(index).unwrap().into_inner().unwrap();
+        println!("      PermutationIndex: Complete - {} terms, {} rotations", terms.len(), final_index.len());
+        
+        PermutationIndex { index: final_index }
     }
 
     fn add_term(&mut self, term: &str) {
@@ -42,6 +71,10 @@ impl PermutationIndex {
     }
 
     fn generate_rotations(&self, term: &str) -> Vec<String> {
+        Self::generate_rotations_static(term)
+    }
+    
+    fn generate_rotations_static(term: &str) -> Vec<String> {
         let mut rotations = Vec::new();
         let term_with_marker = format!("{}$", term);
         let chars: Vec<char> = term_with_marker.chars().collect();

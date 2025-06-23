@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use rayon::prelude::*;
 
 use crate::dictionary::Dictionary;
 use crate::query::{tokenize, QueryParser};
@@ -56,11 +57,11 @@ impl BigramIndex {
             }
         }
 
-        println!("    BigramIndex: Deduplicating posting lists");
-        for posting_list in index.values_mut() {
+        println!("    BigramIndex: Deduplicating posting lists in parallel");
+        index.par_iter_mut().for_each(|(_, posting_list)| {
             posting_list.sort();
             posting_list.dedup();
-        }
+        });
 
         let mut documents: Vec<String> = documents.into_iter().collect();
         documents.sort();

@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use rayon::prelude::*;
 
 use crate::dictionary::Dictionary;
 use crate::query::{tokenize, QueryParser};
@@ -61,25 +62,33 @@ impl CoordinateIndex {
             }
         }
 
-        println!("    CoordinateIndex: Converting to final format");
-        let mut final_index = HashMap::new();
-        let mut term_count = 0;
-        for (term, doc_positions) in index {
-            term_count += 1;
-            if term_count % 1000 == 0 {
-                println!("    CoordinateIndex: Processed {} terms", term_count);
-            }
-            
-            let mut postings = Vec::new();
-            for (document, positions) in doc_positions {
-                postings.push(PostingEntry {
-                    document,
-                    positions,
-                });
-            }
-            postings.sort_by(|a, b| a.document.cmp(&b.document));
-            final_index.insert(term, postings);
-        }
+        println!("    CoordinateIndex: Converting to final format in parallel");
+        let mut term_entries: Vec<_> = index.into_iter().collect();
+        
+        // Process in parallel chunks to show progress
+        let chunk_size = 1000;
+        let final_index: HashMap<String, Vec<PostingEntry>> = term_entries
+            .par_chunks_mut(chunk_size)
+            .enumerate()
+            .flat_map(|(chunk_idx, chunk)| {
+                if (chunk_idx + 1) % 10 == 0 || chunk_idx == 0 {
+                    println!("    CoordinateIndex: Processing chunk {} ({} terms)", 
+                             chunk_idx + 1, (chunk_idx + 1) * chunk_size);
+                }
+                
+                chunk.par_iter_mut().map(|(term, doc_positions)| {
+                    let mut postings = Vec::new();
+                    for (document, positions) in doc_positions.drain() {
+                        postings.push(PostingEntry {
+                            document,
+                            positions,
+                        });
+                    }
+                    postings.sort_by(|a, b| a.document.cmp(&b.document));
+                    (term.clone(), postings)
+                }).collect::<Vec<_>>()
+            })
+            .collect();
 
         let mut documents: Vec<String> = documents.into_iter().collect();
         documents.sort();
