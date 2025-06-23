@@ -10,7 +10,7 @@ pub fn tokenize(query: &str) -> Result<Vec<String>, String> {
     let mut tokens = Vec::new();
     let mut current_token = String::new();
     let mut chars = query.chars().peekable();
-    
+
     while let Some(ch) = chars.next() {
         match ch {
             '(' | ')' => {
@@ -31,10 +31,10 @@ pub fn tokenize(query: &str) -> Result<Vec<String>, String> {
             }
         }
     }
-    
+
     if !current_token.is_empty() {
         tokens.push(current_token.trim().to_string());
     }
-    
+
     Ok(tokens)
 }

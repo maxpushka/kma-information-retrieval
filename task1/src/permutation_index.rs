@@ -1,8 +1,8 @@
+use crate::Dictionary;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use rayon::prelude::*;
-use crate::Dictionary;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PermutationIndex {
@@ -17,63 +17,75 @@ impl PermutationIndex {
     }
 
     pub fn from_dictionary(dictionary: &Dictionary) -> Self {
-        println!("      PermutationIndex: Processing {} terms in parallel", dictionary.terms.len());
-        
+        println!(
+            "      PermutationIndex: Processing {} terms in parallel",
+            dictionary.terms.len()
+        );
+
         let index = Arc::new(Mutex::new(HashMap::new()));
         let terms: Vec<&String> = dictionary.terms.keys().collect();
-        
+
         // Process terms in parallel chunks
         let chunk_size = 1000;
         let chunks: Vec<_> = terms.chunks(chunk_size).collect();
-        
-        chunks.par_iter().enumerate().for_each(|(chunk_idx, chunk)| {
-            let mut local_rotations = HashMap::new();
-            
-            // Generate rotations for this chunk locally (no mutex contention)
-            for term in *chunk {
-                let rotations = Self::generate_rotations_static(term);
-                for rotation in rotations {
-                    local_rotations.entry(rotation)
-                        .or_insert_with(HashSet::new)
-                        .insert(term.to_string());
+
+        chunks
+            .par_iter()
+            .enumerate()
+            .for_each(|(chunk_idx, chunk)| {
+                let mut local_rotations = HashMap::new();
+
+                // Generate rotations for this chunk locally (no mutex contention)
+                for term in *chunk {
+                    let rotations = Self::generate_rotations_static(term);
+                    for rotation in rotations {
+                        local_rotations
+                            .entry(rotation)
+                            .or_insert_with(HashSet::new)
+                            .insert(term.to_string());
+                    }
                 }
-            }
-            
-            // Merge local results into global index (minimal mutex time)
-            if let Ok(mut global_index) = index.lock() {
-                for (rotation, terms_set) in local_rotations {
-                    global_index.entry(rotation)
-                        .or_insert_with(HashSet::new)
-                        .extend(terms_set);
+
+                // Merge local results into global index (minimal mutex time)
+                if let Ok(mut global_index) = index.lock() {
+                    for (rotation, terms_set) in local_rotations {
+                        global_index
+                            .entry(rotation)
+                            .or_insert_with(HashSet::new)
+                            .extend(terms_set);
+                    }
                 }
-            }
-            
-            let processed = (chunk_idx + 1) * chunk_size;
-            if processed % 5000 == 0 || chunk_idx == chunks.len() - 1 {
-                println!("      PermutationIndex: Processed ~{} terms", processed.min(terms.len()));
-            }
-        });
-        
+
+                let processed = (chunk_idx + 1) * chunk_size;
+                if processed % 5000 == 0 || chunk_idx == chunks.len() - 1 {
+                    println!(
+                        "      PermutationIndex: Processed ~{} terms",
+                        processed.min(terms.len())
+                    );
+                }
+            });
+
         let final_index = Arc::try_unwrap(index).unwrap().into_inner().unwrap();
-        println!("      PermutationIndex: Complete - {} terms, {} rotations", terms.len(), final_index.len());
-        
+        println!(
+            "      PermutationIndex: Complete - {} terms, {} rotations",
+            terms.len(),
+            final_index.len()
+        );
+
         PermutationIndex { index: final_index }
     }
-
 
     /// Generate rotations for a single term
     pub(crate) fn generate_rotations_static(term: &str) -> Vec<String> {
         let mut rotations = Vec::new();
         let term_with_marker = format!("{}$", term);
         let chars: Vec<char> = term_with_marker.chars().collect();
-        
+
         for i in 0..chars.len() {
-            let rotation: String = chars[i..].iter()
-                .chain(chars[..i].iter())
-                .collect();
+            let rotation: String = chars[i..].iter().chain(chars[..i].iter()).collect();
             rotations.push(rotation);
         }
-        
+
         rotations
     }
 
@@ -83,7 +95,7 @@ impl PermutationIndex {
         }
 
         let mut results = HashSet::new();
-        
+
         if pattern.contains('*') {
             let pattern_with_marker = if pattern.ends_with('*') {
                 pattern.replacen('*', "$", 1)
@@ -97,7 +109,7 @@ impl PermutationIndex {
                     pattern.to_string()
                 }
             };
-            
+
             for (rotation, terms) in &self.index {
                 if self.matches_wildcard_pattern(rotation, &pattern_with_marker) {
                     results.extend(terms.iter().cloned());
@@ -111,14 +123,14 @@ impl PermutationIndex {
                 }
             }
         }
-        
+
         results
     }
 
     fn matches_wildcard_pattern(&self, rotation: &str, pattern: &str) -> bool {
         if pattern.contains('$') {
             if pattern.ends_with('$') {
-                let prefix = &pattern[..pattern.len()-1];
+                let prefix = &pattern[..pattern.len() - 1];
                 rotation.starts_with(prefix)
             } else if pattern.starts_with('$') {
                 let suffix = &pattern[1..];
@@ -138,7 +150,7 @@ impl PermutationIndex {
 
     pub fn memory_size(&self) -> usize {
         let mut size = std::mem::size_of::<PermutationIndex>();
-        
+
         for (key, values) in &self.index {
             size += std::mem::size_of::<String>() + key.len();
             size += std::mem::size_of::<HashSet<String>>();
@@ -146,7 +158,7 @@ impl PermutationIndex {
                 size += std::mem::size_of::<String>() + value.len();
             }
         }
-        
+
         size
     }
 }
@@ -159,12 +171,30 @@ mod tests {
     #[test]
     fn test_permutation_index_prefix() {
         let mut dict = Dictionary::new();
-        dict.terms.insert("hello".to_string(), TermEntry { frequency: 1, documents: vec!["doc1".to_string()] });
-        dict.terms.insert("help".to_string(), TermEntry { frequency: 1, documents: vec!["doc1".to_string()] });
-        dict.terms.insert("world".to_string(), TermEntry { frequency: 1, documents: vec!["doc1".to_string()] });
-        
+        dict.terms.insert(
+            "hello".to_string(),
+            TermEntry {
+                frequency: 1,
+                documents: vec!["doc1".to_string()],
+            },
+        );
+        dict.terms.insert(
+            "help".to_string(),
+            TermEntry {
+                frequency: 1,
+                documents: vec!["doc1".to_string()],
+            },
+        );
+        dict.terms.insert(
+            "world".to_string(),
+            TermEntry {
+                frequency: 1,
+                documents: vec!["doc1".to_string()],
+            },
+        );
+
         let perm_index = PermutationIndex::from_dictionary(&dict);
-        
+
         let results = perm_index.find_matching_terms("hel*");
         assert!(results.contains("hello"));
         assert!(results.contains("help"));
@@ -174,12 +204,30 @@ mod tests {
     #[test]
     fn test_permutation_index_suffix() {
         let mut dict = Dictionary::new();
-        dict.terms.insert("testing".to_string(), TermEntry { frequency: 1, documents: vec!["doc1".to_string()] });
-        dict.terms.insert("running".to_string(), TermEntry { frequency: 1, documents: vec!["doc1".to_string()] });
-        dict.terms.insert("hello".to_string(), TermEntry { frequency: 1, documents: vec!["doc1".to_string()] });
-        
+        dict.terms.insert(
+            "testing".to_string(),
+            TermEntry {
+                frequency: 1,
+                documents: vec!["doc1".to_string()],
+            },
+        );
+        dict.terms.insert(
+            "running".to_string(),
+            TermEntry {
+                frequency: 1,
+                documents: vec!["doc1".to_string()],
+            },
+        );
+        dict.terms.insert(
+            "hello".to_string(),
+            TermEntry {
+                frequency: 1,
+                documents: vec!["doc1".to_string()],
+            },
+        );
+
         let perm_index = PermutationIndex::from_dictionary(&dict);
-        
+
         let results = perm_index.find_matching_terms("*ing");
         assert!(results.contains("testing"));
         assert!(results.contains("running"));
@@ -189,12 +237,30 @@ mod tests {
     #[test]
     fn test_permutation_index_middle() {
         let mut dict = Dictionary::new();
-        dict.terms.insert("hello".to_string(), TermEntry { frequency: 1, documents: vec!["doc1".to_string()] });
-        dict.terms.insert("world".to_string(), TermEntry { frequency: 1, documents: vec!["doc1".to_string()] });
-        dict.terms.insert("wonderful".to_string(), TermEntry { frequency: 1, documents: vec!["doc1".to_string()] });
-        
+        dict.terms.insert(
+            "hello".to_string(),
+            TermEntry {
+                frequency: 1,
+                documents: vec!["doc1".to_string()],
+            },
+        );
+        dict.terms.insert(
+            "world".to_string(),
+            TermEntry {
+                frequency: 1,
+                documents: vec!["doc1".to_string()],
+            },
+        );
+        dict.terms.insert(
+            "wonderful".to_string(),
+            TermEntry {
+                frequency: 1,
+                documents: vec!["doc1".to_string()],
+            },
+        );
+
         let perm_index = PermutationIndex::from_dictionary(&dict);
-        
+
         let results = perm_index.find_matching_terms("w*l");
         assert!(results.contains("world"));
         assert!(results.contains("wonderful"));

@@ -1,6 +1,6 @@
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use rayon::prelude::*;
 
 use crate::dictionary::Dictionary;
 use crate::query::{tokenize, QueryParser};
@@ -36,7 +36,10 @@ impl CoordinateIndex {
                 documents.insert(document.clone());
             }
         }
-        println!("    CoordinateIndex: Found {} unique documents", documents.len());
+        println!(
+            "    CoordinateIndex: Found {} unique documents",
+            documents.len()
+        );
 
         // Process each document only once
         println!("    CoordinateIndex: Processing documents");
@@ -44,27 +47,36 @@ impl CoordinateIndex {
         for document in &documents {
             processed_count += 1;
             if processed_count % 10 == 0 {
-                println!("    CoordinateIndex: Processed {}/{} documents", processed_count, documents.len());
+                println!(
+                    "    CoordinateIndex: Processed {}/{} documents",
+                    processed_count,
+                    documents.len()
+                );
             }
-            
+
             let words = file_parser(document)?;
-            
+
             for (position, word) in words.iter().enumerate() {
-                index.entry(word.clone())
+                index
+                    .entry(word.clone())
                     .or_insert_with(HashMap::new)
                     .entry(document.clone())
                     .or_insert_with(Vec::new)
                     .push(position);
             }
-            
+
             if processed_count <= 5 || processed_count % 50 == 0 {
-                println!("    CoordinateIndex: Document {} has {} words", document, words.len());
+                println!(
+                    "    CoordinateIndex: Document {} has {} words",
+                    document,
+                    words.len()
+                );
             }
         }
 
         println!("    CoordinateIndex: Converting to final format in parallel");
         let mut term_entries: Vec<_> = index.into_iter().collect();
-        
+
         // Process in parallel chunks to show progress
         let chunk_size = 1000;
         let final_index: HashMap<String, Vec<PostingEntry>> = term_entries
@@ -72,28 +84,38 @@ impl CoordinateIndex {
             .enumerate()
             .flat_map(|(chunk_idx, chunk)| {
                 if (chunk_idx + 1) % 10 == 0 || chunk_idx == 0 {
-                    println!("    CoordinateIndex: Processing chunk {} ({} terms)", 
-                             chunk_idx + 1, (chunk_idx + 1) * chunk_size);
+                    println!(
+                        "    CoordinateIndex: Processing chunk {} ({} terms)",
+                        chunk_idx + 1,
+                        (chunk_idx + 1) * chunk_size
+                    );
                 }
-                
-                chunk.par_iter_mut().map(|(term, doc_positions)| {
-                    let mut postings = Vec::new();
-                    for (document, positions) in doc_positions.drain() {
-                        postings.push(PostingEntry {
-                            document,
-                            positions,
-                        });
-                    }
-                    postings.sort_by(|a, b| a.document.cmp(&b.document));
-                    (term.clone(), postings)
-                }).collect::<Vec<_>>()
+
+                chunk
+                    .par_iter_mut()
+                    .map(|(term, doc_positions)| {
+                        let mut postings = Vec::new();
+                        for (document, positions) in doc_positions.drain() {
+                            postings.push(PostingEntry {
+                                document,
+                                positions,
+                            });
+                        }
+                        postings.sort_by(|a, b| a.document.cmp(&b.document));
+                        (term.clone(), postings)
+                    })
+                    .collect::<Vec<_>>()
             })
             .collect();
 
         let mut documents: Vec<String> = documents.into_iter().collect();
         documents.sort();
 
-        println!("    CoordinateIndex: Construction complete - {} terms, {} documents", final_index.len(), documents.len());
+        println!(
+            "    CoordinateIndex: Construction complete - {} terms, {} documents",
+            final_index.len(),
+            documents.len()
+        );
         Ok(CoordinateIndex {
             index: final_index,
             documents,
@@ -101,16 +123,23 @@ impl CoordinateIndex {
     }
 
     pub fn memory_size(&self) -> usize {
-        std::mem::size_of::<Self>() +
-        self.index.iter().map(|(k, v)| {
-            k.len() + std::mem::size_of::<Vec<PostingEntry>>() + 
-            v.iter().map(|entry| {
-                entry.document.len() + 
-                std::mem::size_of::<Vec<usize>>() + 
-                entry.positions.len() * std::mem::size_of::<usize>()
-            }).sum::<usize>()
-        }).sum::<usize>() +
-        self.documents.iter().map(|d| d.len()).sum::<usize>()
+        std::mem::size_of::<Self>()
+            + self
+                .index
+                .iter()
+                .map(|(k, v)| {
+                    k.len()
+                        + std::mem::size_of::<Vec<PostingEntry>>()
+                        + v.iter()
+                            .map(|entry| {
+                                entry.document.len()
+                                    + std::mem::size_of::<Vec<usize>>()
+                                    + entry.positions.len() * std::mem::size_of::<usize>()
+                            })
+                            .sum::<usize>()
+                })
+                .sum::<usize>()
+            + self.documents.iter().map(|d| d.len()).sum::<usize>()
     }
 
     pub fn search_phrase(&self, phrase: &str) -> Result<HashSet<String>, String> {
@@ -133,16 +162,19 @@ impl CoordinateIndex {
 
         for posting in first_postings {
             let document = &posting.document;
-            
+
             let mut all_words_found = true;
             let mut current_positions = posting.positions.clone();
 
             for (word_offset, word) in words.iter().enumerate().skip(1) {
                 let word_lower = word.to_lowercase();
-                
+
                 if let Some(word_postings) = self.index.get(&word_lower) {
-                    if let Some(word_posting) = word_postings.iter().find(|p| p.document == *document) {
-                        let next_positions: Vec<usize> = current_positions.iter()
+                    if let Some(word_posting) =
+                        word_postings.iter().find(|p| p.document == *document)
+                    {
+                        let next_positions: Vec<usize> = current_positions
+                            .iter()
                             .filter_map(|&pos| {
                                 if word_posting.positions.contains(&(pos + word_offset)) {
                                     Some(pos + word_offset)
@@ -175,7 +207,11 @@ impl CoordinateIndex {
         Ok(result)
     }
 
-    pub fn search_proximity(&self, words: &[&str], max_distance: usize) -> Result<HashSet<String>, String> {
+    pub fn search_proximity(
+        &self,
+        words: &[&str],
+        max_distance: usize,
+    ) -> Result<HashSet<String>, String> {
         if words.len() < 2 {
             return Err("Proximity search requires at least two words".to_string());
         }
@@ -197,9 +233,11 @@ impl CoordinateIndex {
 
                 for word in words.iter().skip(1) {
                     let word_lower = word.to_lowercase();
-                    
+
                     if let Some(word_postings) = self.index.get(&word_lower) {
-                        if let Some(word_posting) = word_postings.iter().find(|p| p.document == *document) {
+                        if let Some(word_posting) =
+                            word_postings.iter().find(|p| p.document == *document)
+                        {
                             let word_in_range = word_posting.positions.iter().any(|&pos| {
                                 let distance = if pos > first_pos {
                                     pos - first_pos
@@ -239,29 +277,37 @@ impl CoordinateIndex {
 
     fn parse_or_expr(&self, tokens: &[String], pos: &mut usize) -> Result<HashSet<String>, String> {
         let mut result = self.parse_and_expr(tokens, pos)?;
-        
+
         while *pos < tokens.len() && tokens[*pos] == "or" {
             *pos += 1;
             let right = self.parse_and_expr(tokens, pos)?;
             result = result.union(&right).cloned().collect();
         }
-        
+
         Ok(result)
     }
-    
-    fn parse_and_expr(&self, tokens: &[String], pos: &mut usize) -> Result<HashSet<String>, String> {
+
+    fn parse_and_expr(
+        &self,
+        tokens: &[String],
+        pos: &mut usize,
+    ) -> Result<HashSet<String>, String> {
         let mut result = self.parse_not_expr(tokens, pos)?;
-        
+
         while *pos < tokens.len() && tokens[*pos] == "and" {
             *pos += 1;
             let right = self.parse_not_expr(tokens, pos)?;
             result = result.intersection(&right).cloned().collect();
         }
-        
+
         Ok(result)
     }
-    
-    fn parse_not_expr(&self, tokens: &[String], pos: &mut usize) -> Result<HashSet<String>, String> {
+
+    fn parse_not_expr(
+        &self,
+        tokens: &[String],
+        pos: &mut usize,
+    ) -> Result<HashSet<String>, String> {
         if *pos < tokens.len() && tokens[*pos] == "not" {
             *pos += 1;
             let result = self.parse_primary(tokens, pos)?;
@@ -271,12 +317,12 @@ impl CoordinateIndex {
             self.parse_primary(tokens, pos)
         }
     }
-    
+
     fn parse_primary(&self, tokens: &[String], pos: &mut usize) -> Result<HashSet<String>, String> {
         if *pos >= tokens.len() {
             return Err("Unexpected end of query".to_string());
         }
-        
+
         if tokens[*pos] == "(" {
             *pos += 1;
             let result = self.parse_or_expr(tokens, pos)?;
@@ -299,15 +345,16 @@ impl CoordinateIndex {
             self.search_phrase(&phrase_words.join(" "))
         } else if tokens[*pos].starts_with("near/") {
             let distance_str = tokens[*pos].strip_prefix("near/").unwrap();
-            let distance: usize = distance_str.parse()
+            let distance: usize = distance_str
+                .parse()
                 .map_err(|_| format!("Invalid distance in near operator: {}", distance_str))?;
-            
+
             *pos += 1;
             if *pos >= tokens.len() || tokens[*pos] != "(" {
                 return Err("Expected '(' after near operator".to_string());
             }
             *pos += 1;
-            
+
             let mut words = Vec::new();
             while *pos < tokens.len() && tokens[*pos] != ")" {
                 words.push(tokens[*pos].as_str());
@@ -317,11 +364,11 @@ impl CoordinateIndex {
                 return Err("Missing closing parenthesis for near operator".to_string());
             }
             *pos += 1;
-            
+
             if words.len() < 2 {
                 return Err("Near operator requires at least two words".to_string());
             }
-            
+
             self.search_proximity(&words, distance)
         } else {
             let term = &tokens[*pos];

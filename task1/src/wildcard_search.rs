@@ -1,7 +1,7 @@
+use crate::{Dictionary, InvertedIndex, PermutationIndex, QueryParser, SuffixTree, TrigramIndex};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use rayon::prelude::*;
-use crate::{Dictionary, InvertedIndex, SuffixTree, PermutationIndex, TrigramIndex, QueryParser};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WildcardSearchEngine {
@@ -15,27 +15,27 @@ pub struct WildcardSearchEngine {
 impl WildcardSearchEngine {
     pub fn from_dictionary(dictionary: Dictionary) -> Self {
         println!("  WildcardSearchEngine: Starting construction");
-        
+
         println!("  WildcardSearchEngine: Building inverted index...");
         let start = std::time::Instant::now();
         let inverted_index = InvertedIndex::from_dictionary(&dictionary);
         println!("    Inverted index built in {:.2?}", start.elapsed());
-        
+
         println!("  WildcardSearchEngine: Building suffix tree...");
         let start = std::time::Instant::now();
         let suffix_tree = SuffixTree::from_dictionary(&dictionary);
         println!("    Suffix tree built in {:.2?}", start.elapsed());
-        
+
         println!("  WildcardSearchEngine: Building permutation index...");
         let start = std::time::Instant::now();
         let permutation_index = PermutationIndex::from_dictionary(&dictionary);
         println!("    Permutation index built in {:.2?}", start.elapsed());
-        
+
         println!("  WildcardSearchEngine: Building trigram index...");
         let start = std::time::Instant::now();
         let trigram_index = TrigramIndex::from_dictionary(&dictionary);
         println!("    Trigram index built in {:.2?}", start.elapsed());
-        
+
         println!("  WildcardSearchEngine: Construction complete");
         WildcardSearchEngine {
             inverted_index,
@@ -67,7 +67,7 @@ impl WildcardSearchEngine {
 
     fn wildcard_search(&self, pattern: &str) -> Result<HashSet<String>, String> {
         let matching_terms = self.find_matching_terms(pattern)?;
-        
+
         if matching_terms.is_empty() {
             return Ok(HashSet::new());
         }
@@ -75,35 +75,44 @@ impl WildcardSearchEngine {
         // Parallelize document lookup for large term sets
         let documents_sets: Vec<_> = if matching_terms.len() > 100 {
             // For large result sets, use parallel processing
-            matching_terms.par_iter()
+            matching_terms
+                .par_iter()
                 .filter_map(|term| {
-                    self.dictionary.terms.get(term).map(|entry| &entry.documents)
+                    self.dictionary
+                        .terms
+                        .get(term)
+                        .map(|entry| &entry.documents)
                 })
                 .map(|docs| docs.iter().cloned().collect::<HashSet<String>>())
                 .collect()
         } else {
             // For small result sets, sequential is faster due to overhead
-            matching_terms.iter()
+            matching_terms
+                .iter()
                 .filter_map(|term| {
-                    self.dictionary.terms.get(term).map(|entry| &entry.documents)
+                    self.dictionary
+                        .terms
+                        .get(term)
+                        .map(|entry| &entry.documents)
                 })
                 .map(|docs| docs.iter().cloned().collect::<HashSet<String>>())
                 .collect()
         };
-        
+
         // Union all document sets
-        let all_documents = documents_sets.into_iter()
+        let all_documents = documents_sets
+            .into_iter()
             .fold(HashSet::new(), |mut acc, docs| {
                 acc.extend(docs);
                 acc
             });
-        
+
         Ok(all_documents)
     }
 
     fn find_matching_terms(&self, pattern: &str) -> Result<HashSet<String>, String> {
         let wildcard_complexity = self.analyze_wildcard_complexity(pattern);
-        
+
         match wildcard_complexity {
             WildcardComplexity::Simple => {
                 if pattern.starts_with('*') && pattern.ends_with('*') {
@@ -122,14 +131,14 @@ impl WildcardSearchEngine {
                     || {
                         let (suffix_results, perm_results) = rayon::join(
                             || self.suffix_tree.find_matching_terms(pattern),
-                            || self.permutation_index.find_matching_terms(pattern)
+                            || self.permutation_index.find_matching_terms(pattern),
                         );
                         (suffix_results, perm_results)
                     },
-                    || self.trigram_index.find_matching_terms(pattern)
+                    || self.trigram_index.find_matching_terms(pattern),
                 );
                 let (suffix_results, perm_results) = suffix_and_perm;
-                
+
                 // Find intersection of results for higher precision
                 let intersection: HashSet<String> = suffix_results
                     .intersection(&perm_results)
@@ -138,7 +147,7 @@ impl WildcardSearchEngine {
                     .intersection(&trigram_results)
                     .cloned()
                     .collect();
-                
+
                 if intersection.is_empty() {
                     // If no intersection, use the trigram results (most comprehensive)
                     Ok(trigram_results)
@@ -146,16 +155,14 @@ impl WildcardSearchEngine {
                     Ok(intersection)
                 }
             }
-            WildcardComplexity::Complex => {
-                Ok(self.trigram_index.find_matching_terms(pattern))
-            }
+            WildcardComplexity::Complex => Ok(self.trigram_index.find_matching_terms(pattern)),
         }
     }
 
     fn analyze_wildcard_complexity(&self, pattern: &str) -> WildcardComplexity {
         let wildcard_count = pattern.chars().filter(|&c| c == '*' || c == '?').count();
         let total_chars = pattern.len();
-        
+
         if wildcard_count == 0 {
             WildcardComplexity::Simple
         } else if wildcard_count == 1 && (pattern.starts_with('*') || pattern.ends_with('*')) {
@@ -173,19 +180,19 @@ impl WildcardSearchEngine {
             suffix_tree_size: self.suffix_tree.memory_size(),
             permutation_index_size: self.permutation_index.memory_size(),
             trigram_index_size: self.trigram_index.memory_size(),
-            total_size: self.inverted_index.memory_size() 
+            total_size: self.inverted_index.memory_size()
                 + self.suffix_tree.memory_size()
-                + self.permutation_index.memory_size() 
+                + self.permutation_index.memory_size()
                 + self.trigram_index.memory_size(),
         }
     }
 
     pub fn search_with_stats(&self, query: &str) -> WildcardSearchResult {
         let start_time = std::time::Instant::now();
-        
+
         let result = self.search(query);
         let search_time = start_time.elapsed();
-        
+
         let strategy = if query.contains('*') || query.contains('?') {
             match self.analyze_wildcard_complexity(query) {
                 WildcardComplexity::Simple => "Permutation Index".to_string(),
@@ -217,9 +224,9 @@ impl WildcardSearchEngine {
 
 #[derive(Debug)]
 enum WildcardComplexity {
-    Simple,   // No wildcards or single prefix/suffix wildcard
-    Medium,   // Few wildcards, mixed pattern
-    Complex,  // Many wildcards or complex pattern
+    Simple,  // No wildcards or single prefix/suffix wildcard
+    Medium,  // Few wildcards, mixed pattern
+    Complex, // Many wildcards or complex pattern
 }
 
 #[derive(Debug)]
@@ -247,26 +254,41 @@ mod tests {
 
     fn create_test_dictionary() -> Dictionary {
         let mut dict = Dictionary::new();
-        dict.terms.insert("hello".to_string(), TermEntry { 
-            frequency: 1, 
-            documents: vec!["doc1.fb2".to_string()] 
-        });
-        dict.terms.insert("help".to_string(), TermEntry { 
-            frequency: 1, 
-            documents: vec!["doc2.fb2".to_string()] 
-        });
-        dict.terms.insert("world".to_string(), TermEntry { 
-            frequency: 1, 
-            documents: vec!["doc1.fb2".to_string()] 
-        });
-        dict.terms.insert("wonderful".to_string(), TermEntry { 
-            frequency: 1, 
-            documents: vec!["doc3.fb2".to_string()] 
-        });
-        dict.terms.insert("testing".to_string(), TermEntry { 
-            frequency: 1, 
-            documents: vec!["doc2.fb2".to_string()] 
-        });
+        dict.terms.insert(
+            "hello".to_string(),
+            TermEntry {
+                frequency: 1,
+                documents: vec!["doc1.fb2".to_string()],
+            },
+        );
+        dict.terms.insert(
+            "help".to_string(),
+            TermEntry {
+                frequency: 1,
+                documents: vec!["doc2.fb2".to_string()],
+            },
+        );
+        dict.terms.insert(
+            "world".to_string(),
+            TermEntry {
+                frequency: 1,
+                documents: vec!["doc1.fb2".to_string()],
+            },
+        );
+        dict.terms.insert(
+            "wonderful".to_string(),
+            TermEntry {
+                frequency: 1,
+                documents: vec!["doc3.fb2".to_string()],
+            },
+        );
+        dict.terms.insert(
+            "testing".to_string(),
+            TermEntry {
+                frequency: 1,
+                documents: vec!["doc2.fb2".to_string()],
+            },
+        );
         dict
     }
 
@@ -274,7 +296,7 @@ mod tests {
     fn test_exact_search() {
         let dict = create_test_dictionary();
         let engine = WildcardSearchEngine::from_dictionary(dict);
-        
+
         let result = engine.search("hello").unwrap();
         assert!(result.contains("doc1.fb2"));
         assert_eq!(result.len(), 1);
@@ -284,7 +306,7 @@ mod tests {
     fn test_prefix_wildcard() {
         let dict = create_test_dictionary();
         let engine = WildcardSearchEngine::from_dictionary(dict);
-        
+
         let result = engine.search("hel*").unwrap();
         assert!(result.contains("doc1.fb2"));
         assert!(result.contains("doc2.fb2"));
@@ -294,7 +316,7 @@ mod tests {
     fn test_suffix_wildcard() {
         let dict = create_test_dictionary();
         let engine = WildcardSearchEngine::from_dictionary(dict);
-        
+
         let result = engine.search("*ing").unwrap();
         assert!(result.contains("doc2.fb2"));
     }
@@ -303,7 +325,7 @@ mod tests {
     fn test_middle_wildcard() {
         let dict = create_test_dictionary();
         let engine = WildcardSearchEngine::from_dictionary(dict);
-        
+
         let result = engine.search("w*l").unwrap();
         assert!(result.contains("doc1.fb2"));
         assert!(result.contains("doc3.fb2"));

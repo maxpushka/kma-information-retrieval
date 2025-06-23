@@ -62,7 +62,10 @@ impl FB2Parser {
         Ok(words)
     }
 
-    pub fn parse_file_with_positions(&self, path: &Path) -> Result<Vec<(String, usize)>, Box<dyn std::error::Error>> {
+    pub fn parse_file_with_positions(
+        &self,
+        path: &Path,
+    ) -> Result<Vec<(String, usize)>, Box<dyn std::error::Error>> {
         let file = File::open(path)?;
         let reader = BufReader::new(file);
         let mut xml_reader = Reader::from_reader(reader);
