@@ -14,3 +14,7 @@ walkdir = "2.4"
 indicatif = "0.17"
 rayon = "1.8"
 bit-vec = { version = "0.6", features = ["serde"] }
+arrow = "53.0"
+parquet = "53.0"
+tokio = { version = "1.0", features = ["full"] }
+tempfile = "3.8"

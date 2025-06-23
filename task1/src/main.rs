@@ -1,7 +1,7 @@
 use clap::{Arg, Command};
 use grimoire::{
     build_dictionary, collect_fb2_files, BigramIndex, CoordinateIndex, FB2Parser, IncidenceMatrix,
-    InvertedIndex, QueryParser, WildcardSearchEngine,
+    InvertedIndex, ParallelSPIMIIndexer, ParquetLoader, QueryParser, WildcardSearchEngine,
 };
 use std::fs;
 use std::time::Instant;
@@ -58,6 +58,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .help("Dictionary file prefix")
                         .default_value("dictionary"),
                 ),
+        )
+        .subcommand(
+            Command::new("parquet-inspect")
+                .about("Inspect Parquet file schema and sample data")
+                .arg(
+                    Arg::new("input")
+                        .short('i')
+                        .long("input")
+                        .value_name("FILE")
+                        .help("Parquet file to inspect")
+                        .required(true),
+                ),
+        )
+        .subcommand(
+            Command::new("parquet-build")
+                .about("Build dictionary and search structures from Parquet file")
+                .arg(
+                    Arg::new("input")
+                        .short('i')
+                        .long("input")
+                        .value_name("FILE")
+                        .help("Parquet file to process")
+                        .required(true),
+                )
+                .arg(
+                    Arg::new("output")
+                        .short('o')
+                        .long("output")
+                        .value_name("PREFIX")
+                        .help("Output file prefix")
+                        .default_value("parquet_dictionary"),
+                )
+                .arg(
+                    Arg::new("spimi")
+                        .long("spimi")
+                        .help("Use SPIMI indexing for large datasets")
+                        .action(clap::ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("memory-limit")
+                        .long("memory-limit")
+                        .value_name("MB")
+                        .help("Memory limit for SPIMI indexing in MB")
+                        .default_value("512"),
+                ),
         );
 
     let matches = cli.get_matches();
@@ -68,6 +113,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Some(("search", sub_matches)) => {
             handle_search_command(sub_matches)?;
+        }
+        Some(("parquet-inspect", sub_matches)) => {
+            handle_parquet_inspect_command(sub_matches)?;
+        }
+        Some(("parquet-build", sub_matches)) => {
+            handle_parquet_build_command(sub_matches)?;
         }
         _ => unreachable!(),
     }
@@ -472,6 +523,141 @@ fn handle_search_command(matches: &clap::ArgMatches) -> Result<(), Box<dyn std::
         println!("Multiple wildcards: *test* - finds any word containing 'test'");
         println!("Single character: c?t - finds 'cat', 'cut', 'cot', etc.");
     }
+
+    Ok(())
+}
+
+fn handle_parquet_inspect_command(matches: &clap::ArgMatches) -> Result<(), Box<dyn std::error::Error>> {
+    let input_file = matches.get_one::<String>("input").unwrap();
+
+    println!("Inspecting Parquet file: {}", input_file);
+    let loader = ParquetLoader::new(input_file);
+    loader.inspect_schema()?;
+
+    Ok(())
+}
+
+fn handle_parquet_build_command(matches: &clap::ArgMatches) -> Result<(), Box<dyn std::error::Error>> {
+    let input_file = matches.get_one::<String>("input").unwrap();
+    let output_prefix = matches.get_one::<String>("output").unwrap();
+    let use_spimi = matches.get_flag("spimi");
+    let memory_limit: usize = matches.get_one::<String>("memory-limit").unwrap().parse()?;
+
+    println!("Processing Parquet file: {}", input_file);
+    let loader = ParquetLoader::new(input_file);
+
+    let start_time = Instant::now();
+    let documents = loader.load_documents()?;
+    let load_time = start_time.elapsed();
+
+    println!("Loaded {} documents in {:.2?}", documents.len(), load_time);
+
+    let dictionary = if use_spimi {
+        println!("Building dictionary using SPIMI indexing (memory limit: {} MB)", memory_limit);
+        let build_start = Instant::now();
+
+        let doc_pairs: Vec<(String, String)> = documents
+            .into_iter()
+            .map(|doc| (doc.id, doc.text))
+            .collect();
+
+        let indexer = ParallelSPIMIIndexer::new(memory_limit, "./spimi_temp", None)?;
+        let dictionary = indexer.build_index(doc_pairs, |processed, total| {
+            if processed % 10000 == 0 {
+                println!("SPIMI: Processed {}/{} documents", processed, total);
+            }
+        })?;
+
+        let build_time = build_start.elapsed();
+        println!("SPIMI indexing completed in {:.2?}", build_time);
+        dictionary
+    } else {
+        println!("Building dictionary using traditional method");
+        let build_start = Instant::now();
+
+        let mut dictionary = grimoire::Dictionary::new();
+
+        for (i, doc) in documents.iter().enumerate() {
+            if i % 10000 == 0 {
+                println!("Processing document {}/{}", i, documents.len());
+            }
+
+            let words: Vec<String> = doc.text
+                .split_whitespace()
+                .map(|word| {
+                    word.chars()
+                        .filter(|c| c.is_alphanumeric())
+                        .collect::<String>()
+                        .to_lowercase()
+                })
+                .filter(|word| !word.is_empty() && word.len() > 2)
+                .collect();
+
+            dictionary.add_file_stats(doc.text.len() as u64);
+
+            for word in words {
+                dictionary.add_term(word, doc.id.clone());
+            }
+        }
+
+        let build_time = build_start.elapsed();
+        println!("Traditional indexing completed in {:.2?}", build_time);
+        dictionary
+    };
+
+    println!("\n=== PARQUET COLLECTION STATISTICS ===");
+    println!("Collection size: {} bytes ({:.2} MB)",
+             dictionary.collection_size_bytes,
+             dictionary.collection_size_bytes as f64 / 1_048_576.0);
+    println!("Total documents: {}", dictionary.total_documents);
+    println!("Total words: {}", dictionary.total_words);
+    println!("Dictionary size: {} unique terms", dictionary.dictionary_size());
+
+    // Build search structures
+    println!("\n=== BUILDING SEARCH STRUCTURES ===");
+
+    let incidence_start = Instant::now();
+    let incidence_matrix = IncidenceMatrix::from_dictionary(&dictionary);
+    let incidence_time = incidence_start.elapsed();
+    let incidence_size = incidence_matrix.memory_size();
+
+    let inverted_start = Instant::now();
+    let inverted_index = InvertedIndex::from_dictionary(&dictionary);
+    let inverted_time = inverted_start.elapsed();
+    let inverted_size = inverted_index.memory_size();
+
+    println!("Building wildcard search engine...");
+    let wildcard_start = Instant::now();
+    let wildcard_engine = WildcardSearchEngine::from_dictionary(dictionary.clone());
+    let wildcard_time = wildcard_start.elapsed();
+    let wildcard_stats = wildcard_engine.memory_size();
+
+    println!("Incidence Matrix: {} bytes, built in {:.2?}", incidence_size, incidence_time);
+    println!("Inverted Index: {} bytes, built in {:.2?}", inverted_size, inverted_time);
+    println!("Wildcard Engine: {} bytes, built in {:.2?}", wildcard_stats.total_size, wildcard_time);
+
+    // Save indexes
+    let matrix_path = format!("{}_matrix.bin", output_prefix);
+    let index_path = format!("{}_index.bin", output_prefix);
+    let wildcard_path = format!("{}_wildcard.bin", output_prefix);
+
+    let matrix_data = bincode::serialize(&incidence_matrix)?;
+    fs::write(&matrix_path, matrix_data)?;
+
+    let index_data = bincode::serialize(&inverted_index)?;
+    fs::write(&index_path, index_data)?;
+
+    let wildcard_data = bincode::serialize(&wildcard_engine)?;
+    fs::write(&wildcard_path, wildcard_data)?;
+
+    println!("Saved incidence matrix to: {}", matrix_path);
+    println!("Saved inverted index to: {}", index_path);
+    println!("Saved wildcard engine to: {}", wildcard_path);
+
+    // Save dictionary
+    let dict_path = format!("{}.bin", output_prefix);
+    let dict_size = dictionary.save_as_binary(&dict_path)?;
+    println!("Saved dictionary to: {} ({} bytes)", dict_path, dict_size);
 
     Ok(())
 }
