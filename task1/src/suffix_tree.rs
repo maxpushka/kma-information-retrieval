@@ -1,0 +1,179 @@
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
+use crate::Dictionary;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SuffixNode {
+    pub children: HashMap<char, Box<SuffixNode>>,
+    pub is_terminal: bool,
+    pub terms: HashSet<String>,
+}
+
+impl SuffixNode {
+    fn new() -> Self {
+        SuffixNode {
+            children: HashMap::new(),
+            is_terminal: false,
+            terms: HashSet::new(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SuffixTree {
+    root: SuffixNode,
+}
+
+impl SuffixTree {
+    pub fn new() -> Self {
+        SuffixTree {
+            root: SuffixNode::new(),
+        }
+    }
+
+    pub fn from_dictionary(dictionary: &Dictionary) -> Self {
+        println!("      SuffixTree: Processing {} terms", dictionary.terms.len());
+        let mut tree = SuffixTree::new();
+        
+        let mut processed = 0;
+        for term in dictionary.terms.keys() {
+            tree.add_term(term);
+            processed += 1;
+            if processed % 5000 == 0 {
+                println!("      SuffixTree: Processed {} terms", processed);
+            }
+        }
+        
+        println!("      SuffixTree: Complete - {} terms processed", processed);
+        tree
+    }
+
+    fn add_term(&mut self, term: &str) {
+        let term_chars: Vec<char> = term.chars().collect();
+        
+        for start_idx in 0..term_chars.len() {
+            let suffix = &term_chars[start_idx..];
+            self.insert_suffix(suffix, term);
+        }
+    }
+
+    fn insert_suffix(&mut self, suffix: &[char], original_term: &str) {
+        let mut current = &mut self.root;
+        
+        for &ch in suffix {
+            current = current.children
+                .entry(ch)
+                .or_insert_with(|| Box::new(SuffixNode::new()));
+            current.terms.insert(original_term.to_string());
+        }
+        
+        current.is_terminal = true;
+    }
+
+    pub fn find_matching_terms(&self, pattern: &str) -> HashSet<String> {
+        if pattern.is_empty() {
+            return HashSet::new();
+        }
+
+        let mut results = HashSet::new();
+        self.find_with_wildcards(&self.root, pattern, &mut results);
+        results
+    }
+
+    fn find_with_wildcards(
+        &self,
+        node: &SuffixNode,
+        pattern: &str,
+        results: &mut HashSet<String>,
+    ) {
+        if pattern.is_empty() {
+            results.extend(node.terms.iter().cloned());
+            return;
+        }
+
+        let chars: Vec<char> = pattern.chars().collect();
+        let first_char = chars[0];
+        let remaining = &pattern[1..];
+
+        if first_char == '*' {
+            results.extend(node.terms.iter().cloned());
+            
+            for child in node.children.values() {
+                self.find_with_wildcards(child, pattern, results);
+                self.find_with_wildcards(child, remaining, results);
+            }
+        } else if first_char == '?' {
+            for child in node.children.values() {
+                self.find_with_wildcards(child, remaining, results);
+            }
+        } else {
+            if let Some(child) = node.children.get(&first_char) {
+                self.find_with_wildcards(child, remaining, results);
+            }
+        }
+    }
+
+    pub fn memory_size(&self) -> usize {
+        self.calculate_node_size(&self.root)
+    }
+
+    fn calculate_node_size(&self, node: &SuffixNode) -> usize {
+        let mut size = std::mem::size_of::<SuffixNode>();
+        
+        size += node.children.len() * std::mem::size_of::<(char, Box<SuffixNode>)>();
+        for child in node.children.values() {
+            size += self.calculate_node_size(child);
+        }
+        
+        size += node.terms.len() * std::mem::size_of::<String>();
+        for term in &node.terms {
+            size += term.len();
+        }
+        
+        size
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dictionary::{Dictionary, TermEntry};
+
+    #[test]
+    fn test_suffix_tree_basic() {
+        let mut dict = Dictionary::new();
+        dict.terms.insert("cat".to_string(), TermEntry { frequency: 1, documents: vec!["doc1".to_string()] });
+        dict.terms.insert("car".to_string(), TermEntry { frequency: 1, documents: vec!["doc1".to_string()] });
+        dict.terms.insert("card".to_string(), TermEntry { frequency: 1, documents: vec!["doc1".to_string()] });
+        
+        let tree = SuffixTree::from_dictionary(&dict);
+        
+        let results = tree.find_matching_terms("ca*");
+        assert!(results.contains("cat"));
+        assert!(results.contains("car"));
+        assert!(results.contains("card"));
+        
+        let results = tree.find_matching_terms("car");
+        assert!(results.contains("car"));
+        assert!(results.contains("card"));
+    }
+
+    #[test]
+    fn test_wildcard_queries() {
+        let mut dict = Dictionary::new();
+        dict.terms.insert("test".to_string(), TermEntry { frequency: 1, documents: vec!["doc1".to_string()] });
+        dict.terms.insert("testing".to_string(), TermEntry { frequency: 1, documents: vec!["doc1".to_string()] });
+        dict.terms.insert("tester".to_string(), TermEntry { frequency: 1, documents: vec!["doc1".to_string()] });
+        
+        let tree = SuffixTree::from_dictionary(&dict);
+        
+        let results = tree.find_matching_terms("test*");
+        assert_eq!(results.len(), 3);
+        
+        let results = tree.find_matching_terms("test??");
+        assert!(results.contains("tester"));
+        
+        let results = tree.find_matching_terms("*ing");
+        assert!(results.contains("testing"));
+    }
+}

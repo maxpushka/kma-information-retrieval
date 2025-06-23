@@ -18,24 +18,45 @@ impl BigramIndex {
     where
         F: Fn(&str) -> Result<Vec<String>, Box<dyn std::error::Error>>,
     {
+        println!("    BigramIndex: Starting index construction");
         let mut index = HashMap::new();
         let mut documents = HashSet::new();
 
+        // Collect unique documents first to avoid duplicate processing
+        println!("    BigramIndex: Collecting unique documents");
         for (_, term_entry) in &dictionary.terms {
             for document in &term_entry.documents {
                 documents.insert(document.clone());
-                
-                let words = file_parser(document)?;
-                
-                for window in words.windows(2) {
-                    let bigram = format!("{} {}", window[0], window[1]);
-                    index.entry(bigram)
-                        .or_insert_with(Vec::new)
-                        .push(document.clone());
-                }
+            }
+        }
+        println!("    BigramIndex: Found {} unique documents", documents.len());
+
+        // Process each document only once
+        println!("    BigramIndex: Processing documents");
+        let mut processed_count = 0;
+        for document in &documents {
+            processed_count += 1;
+            if processed_count % 10 == 0 {
+                println!("    BigramIndex: Processed {}/{} documents", processed_count, documents.len());
+            }
+            
+            let words = file_parser(document)?;
+            
+            let mut bigram_count = 0;
+            for window in words.windows(2) {
+                let bigram = format!("{} {}", window[0], window[1]);
+                index.entry(bigram)
+                    .or_insert_with(Vec::new)
+                    .push(document.clone());
+                bigram_count += 1;
+            }
+            
+            if processed_count <= 5 || processed_count % 50 == 0 {
+                println!("    BigramIndex: Document {} generated {} bigrams", document, bigram_count);
             }
         }
 
+        println!("    BigramIndex: Deduplicating posting lists");
         for posting_list in index.values_mut() {
             posting_list.sort();
             posting_list.dedup();
@@ -44,6 +65,7 @@ impl BigramIndex {
         let mut documents: Vec<String> = documents.into_iter().collect();
         documents.sort();
 
+        println!("    BigramIndex: Construction complete - {} bigrams, {} documents", index.len(), documents.len());
         Ok(BigramIndex { index, documents })
     }
 

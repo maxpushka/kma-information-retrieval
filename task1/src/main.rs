@@ -1,5 +1,5 @@
 use clap::{Arg, Command};
-use grimoire::{build_dictionary, collect_fb2_files, IncidenceMatrix, InvertedIndex, BigramIndex, CoordinateIndex, QueryParser, FB2Parser};
+use grimoire::{build_dictionary, collect_fb2_files, IncidenceMatrix, InvertedIndex, BigramIndex, CoordinateIndex, QueryParser, FB2Parser, WildcardSearchEngine};
 use std::fs;
 use std::time::Instant;
 
@@ -131,28 +131,52 @@ fn handle_build_command(matches: &clap::ArgMatches) -> Result<(), Box<dyn std::e
     let inverted_size = inverted_index.memory_size();
 
     println!("Building bigram index...");
+    println!("  Dictionary has {} unique terms", dictionary.terms.len());
     let bigram_start = Instant::now();
     let parser = FB2Parser::new();
     let bigram_index = BigramIndex::from_dictionary_with_parser(&dictionary, |doc_name| {
+        println!("  Processing document for bigram index: {}", doc_name);
         let file_path = std::path::Path::new(input_dir).join(doc_name);
-        parser.parse_file(&file_path)
+        let result = parser.parse_file(&file_path);
+        if let Ok(ref words) = result {
+            println!("    Parsed {} words from {}", words.len(), doc_name);
+        } else {
+            println!("    Failed to parse {}", doc_name);
+        }
+        result
     })?;
     let bigram_time = bigram_start.elapsed();
     let bigram_size = bigram_index.memory_size();
+    println!("  Bigram index built with {} bigrams", bigram_index.index.len());
 
     println!("Building coordinate index...");
     let coordinate_start = Instant::now();
     let coordinate_index = CoordinateIndex::from_dictionary_with_parser(&dictionary, |doc_name| {
+        println!("  Processing document for coordinate index: {}", doc_name);
         let file_path = std::path::Path::new(input_dir).join(doc_name);
-        parser.parse_file(&file_path)
+        let result = parser.parse_file(&file_path);
+        if let Ok(ref words) = result {
+            println!("    Parsed {} words from {}", words.len(), doc_name);
+        } else {
+            println!("    Failed to parse {}", doc_name);
+        }
+        result
     })?;
     let coordinate_time = coordinate_start.elapsed();
     let coordinate_size = coordinate_index.memory_size();
+    println!("  Coordinate index built with {} terms", coordinate_index.index.len());
+
+    println!("Building wildcard search engine...");
+    let wildcard_start = Instant::now();
+    let wildcard_engine = WildcardSearchEngine::from_dictionary(dictionary.clone());
+    let wildcard_time = wildcard_start.elapsed();
+    let wildcard_stats = wildcard_engine.memory_size();
 
     println!("Incidence Matrix: {} bytes, built in {:.2?}", incidence_size, incidence_time);
     println!("Inverted Index: {} bytes, built in {:.2?}", inverted_size, inverted_time);
     println!("Bigram Index: {} bytes, built in {:.2?}", bigram_size, bigram_time);
     println!("Coordinate Index: {} bytes, built in {:.2?}", coordinate_size, coordinate_time);
+    println!("Wildcard Engine: {} bytes, built in {:.2?}", wildcard_stats.total_size, wildcard_time);
     
     let matrix_path = format!("{}_matrix.bin", output_prefix);
     let index_path = format!("{}_index.bin", output_prefix);
@@ -171,10 +195,15 @@ fn handle_build_command(matches: &clap::ArgMatches) -> Result<(), Box<dyn std::e
     let coordinate_data = bincode::serialize(&coordinate_index)?;
     fs::write(&coordinate_path, coordinate_data)?;
     
+    let wildcard_path = format!("{}_wildcard.bin", output_prefix);
+    let wildcard_data = bincode::serialize(&wildcard_engine)?;
+    fs::write(&wildcard_path, wildcard_data)?;
+    
     println!("Saved incidence matrix to: {}", matrix_path);
     println!("Saved inverted index to: {}", index_path);
     println!("Saved bigram index to: {}", bigram_path);
     println!("Saved coordinate index to: {}", coordinate_path);
+    println!("Saved wildcard engine to: {}", wildcard_path);
 
     println!("\n=== STRUCTURE COMPARISON ===");
     println!("Dictionary (HashMap):  {} bytes", 
@@ -184,6 +213,10 @@ fn handle_build_command(matches: &clap::ArgMatches) -> Result<(), Box<dyn std::e
     println!("Inverted Index:        {} bytes", inverted_size);
     println!("Bigram Index:          {} bytes", bigram_size);
     println!("Coordinate Index:      {} bytes", coordinate_size);
+    println!("Wildcard Engine:       {} bytes", wildcard_stats.total_size);
+    println!("  - Suffix Tree:       {} bytes", wildcard_stats.suffix_tree_size);
+    println!("  - Permutation Index: {} bytes", wildcard_stats.permutation_index_size);
+    println!("  - Trigram Index:     {} bytes", wildcard_stats.trigram_index_size);
     
     let efficiency_ratio = inverted_size as f64 / incidence_size as f64;
     println!("Space efficiency (Index/Matrix): {:.2}x", efficiency_ratio);
@@ -267,6 +300,7 @@ fn handle_search_command(matches: &clap::ArgMatches) -> Result<(), Box<dyn std::
     let index_path = format!("{}_index.bin", dict_prefix);
     let bigram_path = format!("{}_bigram.bin", dict_prefix);
     let coordinate_path = format!("{}_coordinate.bin", dict_prefix);
+    let wildcard_path = format!("{}_wildcard.bin", dict_prefix);
     
     println!("Loading search structures...");
     
@@ -281,6 +315,9 @@ fn handle_search_command(matches: &clap::ArgMatches) -> Result<(), Box<dyn std::
     
     let coordinate_data = fs::read(&coordinate_path)?;
     let coordinate_index: CoordinateIndex = bincode::deserialize(&coordinate_data)?;
+    
+    let wildcard_data = fs::read(&wildcard_path)?;
+    let wildcard_engine: WildcardSearchEngine = bincode::deserialize(&wildcard_data)?;
     
     println!("Query: {}", query);
     println!("\n=== INCIDENCE MATRIX SEARCH ===");
@@ -349,6 +386,32 @@ fn handle_search_command(matches: &clap::ArgMatches) -> Result<(), Box<dyn std::
         println!("Example proximity searches:");
         println!("  near/5(word1 word2) - finds 'word1' and 'word2' within 5 positions");
         println!("  near/10(love peace) - finds 'love' and 'peace' within 10 positions");
+    }
+
+    if query.contains('*') || query.contains('?') {
+        println!("\n=== WILDCARD SEARCH ===");
+        let wildcard_result = wildcard_engine.search_with_stats(query);
+        
+        println!("Strategy: {}", wildcard_result.strategy);
+        println!("Search time: {:.2?}", wildcard_result.search_time);
+        
+        if let Some(error) = wildcard_result.error {
+            println!("Error: {}", error);
+        } else {
+            let mut docs: Vec<_> = wildcard_result.documents.iter().collect();
+            docs.sort();
+            println!("Found {} documents", docs.len());
+            for doc in &docs {
+                println!("  - {}", doc);
+            }
+        }
+        
+        println!("\n=== WILDCARD SEARCH EXAMPLES ===");
+        println!("Prefix wildcard: cat* - finds 'cat', 'cats', 'category', etc.");
+        println!("Suffix wildcard: *ing - finds 'running', 'testing', 'building', etc.");
+        println!("Middle wildcard: c*t - finds 'cat', 'cart', 'coat', etc.");
+        println!("Multiple wildcards: *test* - finds any word containing 'test'");
+        println!("Single character: c?t - finds 'cat', 'cut', 'cot', etc.");
     }
 
     Ok(())

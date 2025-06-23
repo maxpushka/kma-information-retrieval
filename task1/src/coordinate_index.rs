@@ -24,27 +24,52 @@ impl CoordinateIndex {
     where
         F: Fn(&str) -> Result<Vec<String>, Box<dyn std::error::Error>>,
     {
+        println!("    CoordinateIndex: Starting index construction");
         let mut index: HashMap<String, HashMap<String, Vec<usize>>> = HashMap::new();
         let mut documents = HashSet::new();
 
+        // Collect unique documents first to avoid duplicate processing
+        println!("    CoordinateIndex: Collecting unique documents");
         for (_, term_entry) in &dictionary.terms {
             for document in &term_entry.documents {
                 documents.insert(document.clone());
-                
-                let words = file_parser(document)?;
-                
-                for (position, word) in words.iter().enumerate() {
-                    index.entry(word.clone())
-                        .or_insert_with(HashMap::new)
-                        .entry(document.clone())
-                        .or_insert_with(Vec::new)
-                        .push(position);
-                }
+            }
+        }
+        println!("    CoordinateIndex: Found {} unique documents", documents.len());
+
+        // Process each document only once
+        println!("    CoordinateIndex: Processing documents");
+        let mut processed_count = 0;
+        for document in &documents {
+            processed_count += 1;
+            if processed_count % 10 == 0 {
+                println!("    CoordinateIndex: Processed {}/{} documents", processed_count, documents.len());
+            }
+            
+            let words = file_parser(document)?;
+            
+            for (position, word) in words.iter().enumerate() {
+                index.entry(word.clone())
+                    .or_insert_with(HashMap::new)
+                    .entry(document.clone())
+                    .or_insert_with(Vec::new)
+                    .push(position);
+            }
+            
+            if processed_count <= 5 || processed_count % 50 == 0 {
+                println!("    CoordinateIndex: Document {} has {} words", document, words.len());
             }
         }
 
+        println!("    CoordinateIndex: Converting to final format");
         let mut final_index = HashMap::new();
+        let mut term_count = 0;
         for (term, doc_positions) in index {
+            term_count += 1;
+            if term_count % 1000 == 0 {
+                println!("    CoordinateIndex: Processed {} terms", term_count);
+            }
+            
             let mut postings = Vec::new();
             for (document, positions) in doc_positions {
                 postings.push(PostingEntry {
@@ -59,6 +84,7 @@ impl CoordinateIndex {
         let mut documents: Vec<String> = documents.into_iter().collect();
         documents.sort();
 
+        println!("    CoordinateIndex: Construction complete - {} terms, {} documents", final_index.len(), documents.len());
         Ok(CoordinateIndex {
             index: final_index,
             documents,
