@@ -1,12 +1,16 @@
 pub mod dictionary;
 pub mod incidence_matrix;
 pub mod inverted_index;
+pub mod bigram_index;
+pub mod coordinate_index;
 pub mod parser;
 pub mod query;
 
 pub use dictionary::*;
 pub use incidence_matrix::*;
 pub use inverted_index::*;
+pub use bigram_index::*;
+pub use coordinate_index::*;
 pub use parser::*;
 pub use query::*;
 

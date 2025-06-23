@@ -1,5 +1,5 @@
 use clap::{Arg, Command};
-use grimoire::{build_dictionary, collect_fb2_files, IncidenceMatrix, InvertedIndex, QueryParser};
+use grimoire::{build_dictionary, collect_fb2_files, IncidenceMatrix, InvertedIndex, BigramIndex, CoordinateIndex, QueryParser, FB2Parser};
 use std::fs;
 use std::time::Instant;
 
@@ -130,11 +130,34 @@ fn handle_build_command(matches: &clap::ArgMatches) -> Result<(), Box<dyn std::e
     let inverted_time = inverted_start.elapsed();
     let inverted_size = inverted_index.memory_size();
 
+    println!("Building bigram index...");
+    let bigram_start = Instant::now();
+    let parser = FB2Parser::new();
+    let bigram_index = BigramIndex::from_dictionary_with_parser(&dictionary, |doc_name| {
+        let file_path = std::path::Path::new(input_dir).join(doc_name);
+        parser.parse_file(&file_path)
+    })?;
+    let bigram_time = bigram_start.elapsed();
+    let bigram_size = bigram_index.memory_size();
+
+    println!("Building coordinate index...");
+    let coordinate_start = Instant::now();
+    let coordinate_index = CoordinateIndex::from_dictionary_with_parser(&dictionary, |doc_name| {
+        let file_path = std::path::Path::new(input_dir).join(doc_name);
+        parser.parse_file(&file_path)
+    })?;
+    let coordinate_time = coordinate_start.elapsed();
+    let coordinate_size = coordinate_index.memory_size();
+
     println!("Incidence Matrix: {} bytes, built in {:.2?}", incidence_size, incidence_time);
     println!("Inverted Index: {} bytes, built in {:.2?}", inverted_size, inverted_time);
+    println!("Bigram Index: {} bytes, built in {:.2?}", bigram_size, bigram_time);
+    println!("Coordinate Index: {} bytes, built in {:.2?}", coordinate_size, coordinate_time);
     
     let matrix_path = format!("{}_matrix.bin", output_prefix);
     let index_path = format!("{}_index.bin", output_prefix);
+    let bigram_path = format!("{}_bigram.bin", output_prefix);
+    let coordinate_path = format!("{}_coordinate.bin", output_prefix);
     
     let matrix_data = bincode::serialize(&incidence_matrix)?;
     fs::write(&matrix_path, matrix_data)?;
@@ -142,8 +165,16 @@ fn handle_build_command(matches: &clap::ArgMatches) -> Result<(), Box<dyn std::e
     let index_data = bincode::serialize(&inverted_index)?;
     fs::write(&index_path, index_data)?;
     
+    let bigram_data = bincode::serialize(&bigram_index)?;
+    fs::write(&bigram_path, bigram_data)?;
+    
+    let coordinate_data = bincode::serialize(&coordinate_index)?;
+    fs::write(&coordinate_path, coordinate_data)?;
+    
     println!("Saved incidence matrix to: {}", matrix_path);
     println!("Saved inverted index to: {}", index_path);
+    println!("Saved bigram index to: {}", bigram_path);
+    println!("Saved coordinate index to: {}", coordinate_path);
 
     println!("\n=== STRUCTURE COMPARISON ===");
     println!("Dictionary (HashMap):  {} bytes", 
@@ -151,9 +182,13 @@ fn handle_build_command(matches: &clap::ArgMatches) -> Result<(), Box<dyn std::e
              dictionary.terms.iter().map(|(k, v)| k.len() + std::mem::size_of_val(v)).sum::<usize>());
     println!("Incidence Matrix:      {} bytes", incidence_size);
     println!("Inverted Index:        {} bytes", inverted_size);
+    println!("Bigram Index:          {} bytes", bigram_size);
+    println!("Coordinate Index:      {} bytes", coordinate_size);
     
     let efficiency_ratio = inverted_size as f64 / incidence_size as f64;
     println!("Space efficiency (Index/Matrix): {:.2}x", efficiency_ratio);
+    let coordinate_ratio = coordinate_size as f64 / inverted_size as f64;
+    println!("Space overhead (Coordinate/Inverted): {:.2}x", coordinate_ratio);
 
     println!("\n=== DATA STRUCTURE ANALYSIS ===");
     println!("Incidence Matrix:");
@@ -166,6 +201,16 @@ fn handle_build_command(matches: &clap::ArgMatches) -> Result<(), Box<dyn std::e
     println!("  - Space: O(|unique_postings|) - only stores actual occurrences");
     println!("  - Search: O(1) for term lookup + O(|posting_lists|) for Boolean operations");
     println!("  - Memory: Variable size based on term distribution");
+    
+    println!("Bigram Index:");
+    println!("  - Space: O(|unique_bigrams|) - stores two-word combinations");
+    println!("  - Search: Optimized for phrase search with exact word order");
+    println!("  - Memory: {} bigrams indexed", bigram_index.index.len());
+    
+    println!("Coordinate Index:");
+    println!("  - Space: O(|postings| × |positions|) - stores position information");
+    println!("  - Search: Supports phrase and proximity search with position verification");
+    println!("  - Memory: Includes position data for each term occurrence");
 
     println!("\n=== SAVING DICTIONARY ===");
     let mut format_sizes = Vec::new();
@@ -220,6 +265,8 @@ fn handle_search_command(matches: &clap::ArgMatches) -> Result<(), Box<dyn std::
     
     let matrix_path = format!("{}_matrix.bin", dict_prefix);
     let index_path = format!("{}_index.bin", dict_prefix);
+    let bigram_path = format!("{}_bigram.bin", dict_prefix);
+    let coordinate_path = format!("{}_coordinate.bin", dict_prefix);
     
     println!("Loading search structures...");
     
@@ -228,6 +275,12 @@ fn handle_search_command(matches: &clap::ArgMatches) -> Result<(), Box<dyn std::
     
     let index_data = fs::read(&index_path)?;
     let inverted_index: InvertedIndex = bincode::deserialize(&index_data)?;
+    
+    let bigram_data = fs::read(&bigram_path)?;
+    let bigram_index: BigramIndex = bincode::deserialize(&bigram_data)?;
+    
+    let coordinate_data = fs::read(&coordinate_path)?;
+    let coordinate_index: CoordinateIndex = bincode::deserialize(&coordinate_data)?;
     
     println!("Query: {}", query);
     println!("\n=== INCIDENCE MATRIX SEARCH ===");
@@ -257,6 +310,45 @@ fn handle_search_command(matches: &clap::ArgMatches) -> Result<(), Box<dyn std::
             }
         }
         Err(e) => println!("Error: {}", e),
+    }
+
+    if query.contains('"') {
+        println!("\n=== BIGRAM INDEX PHRASE SEARCH ===");
+        let bigram_start = Instant::now();
+        match bigram_index.search(query) {
+            Ok(result) => {
+                let bigram_time = bigram_start.elapsed();
+                let mut docs: Vec<_> = result.iter().collect();
+                docs.sort();
+                println!("Found {} documents in {:.2?}", docs.len(), bigram_time);
+                for doc in &docs {
+                    println!("  - {}", doc);
+                }
+            }
+            Err(e) => println!("Error: {}", e),
+        }
+    }
+
+    println!("\n=== COORDINATE INDEX SEARCH ===");
+    let coordinate_start = Instant::now();
+    match coordinate_index.search(query) {
+        Ok(result) => {
+            let coordinate_time = coordinate_start.elapsed();
+            let mut docs: Vec<_> = result.iter().collect();
+            docs.sort();
+            println!("Found {} documents in {:.2?}", docs.len(), coordinate_time);
+            for doc in &docs {
+                println!("  - {}", doc);
+            }
+        }
+        Err(e) => println!("Error: {}", e),
+    }
+
+    if query.contains("near/") {
+        println!("\n=== PROXIMITY SEARCH EXAMPLE ===");
+        println!("Example proximity searches:");
+        println!("  near/5(word1 word2) - finds 'word1' and 'word2' within 5 positions");
+        println!("  near/10(love peace) - finds 'love' and 'peace' within 10 positions");
     }
 
     Ok(())
