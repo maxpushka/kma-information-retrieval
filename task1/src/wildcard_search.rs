@@ -1,11 +1,11 @@
-use crate::{Dictionary, InvertedIndex, PermutationIndex, QueryParser, SuffixTree, TrigramIndex};
+use crate::{Dictionary, CompressedInvertedIndex, PermutationIndex, QueryParser, SuffixTree, TrigramIndex};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WildcardSearchEngine {
-    inverted_index: InvertedIndex,
+    inverted_index: CompressedInvertedIndex,
     suffix_tree: SuffixTree,
     permutation_index: PermutationIndex,
     trigram_index: TrigramIndex,
@@ -18,7 +18,7 @@ impl WildcardSearchEngine {
 
         println!("  WildcardSearchEngine: Building inverted index...");
         let start = std::time::Instant::now();
-        let inverted_index = InvertedIndex::from_dictionary(&dictionary);
+        let inverted_index = CompressedInvertedIndex::from_dictionary(&dictionary);
         println!("    Inverted index built in {:.2?}", start.elapsed());
 
         println!("  WildcardSearchEngine: Building suffix tree...");
@@ -78,10 +78,18 @@ impl WildcardSearchEngine {
             matching_terms
                 .par_iter()
                 .filter_map(|term| {
-                    self.dictionary
-                        .terms
-                        .get(term)
-                        .map(|entry| &entry.documents)
+                    // Find the term in the dictionary by looking up its position
+                    self.dictionary.terms.iter().find_map(|(start_pos, entry)| {
+                        if let Some(dict_term) = self.dictionary.get_term(*start_pos) {
+                            if dict_term == term {
+                                Some(&entry.documents)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    })
                 })
                 .map(|docs| docs.iter().cloned().collect::<HashSet<String>>())
                 .collect()
@@ -90,10 +98,18 @@ impl WildcardSearchEngine {
             matching_terms
                 .iter()
                 .filter_map(|term| {
-                    self.dictionary
-                        .terms
-                        .get(term)
-                        .map(|entry| &entry.documents)
+                    // Find the term in the dictionary by looking up its position
+                    self.dictionary.terms.iter().find_map(|(start_pos, entry)| {
+                        if let Some(dict_term) = self.dictionary.get_term(*start_pos) {
+                            if dict_term == term {
+                                Some(&entry.documents)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    })
                 })
                 .map(|docs| docs.iter().cloned().collect::<HashSet<String>>())
                 .collect()
@@ -139,20 +155,29 @@ impl WildcardSearchEngine {
                 );
                 let (suffix_results, perm_results) = suffix_and_perm;
 
-                // Find intersection of results for higher precision
-                let intersection: HashSet<String> = suffix_results
+                // Use intersection of suffix tree and permutation index (both are reliable)
+                // Only include trigram results if they're not empty
+                let reliable_intersection: HashSet<String> = suffix_results
                     .intersection(&perm_results)
-                    .cloned()
-                    .collect::<HashSet<_>>()
-                    .intersection(&trigram_results)
                     .cloned()
                     .collect();
 
-                if intersection.is_empty() {
-                    // If no intersection, use the trigram results (most comprehensive)
-                    Ok(trigram_results)
+                if trigram_results.is_empty() {
+                    // If trigram index has no results, use the reliable intersection
+                    Ok(reliable_intersection)
                 } else {
-                    Ok(intersection)
+                    // Find intersection of all three for highest precision
+                    let full_intersection: HashSet<String> = reliable_intersection
+                        .intersection(&trigram_results)
+                        .cloned()
+                        .collect();
+                    
+                    if full_intersection.is_empty() {
+                        // If full intersection is empty, use the reliable intersection
+                        Ok(reliable_intersection)
+                    } else {
+                        Ok(full_intersection)
+                    }
                 }
             }
             WildcardComplexity::Complex => Ok(self.trigram_index.find_matching_terms(pattern)),
@@ -165,7 +190,8 @@ impl WildcardSearchEngine {
 
         if wildcard_count == 0 {
             WildcardComplexity::Simple
-        } else if wildcard_count == 1 && (pattern.starts_with('*') || pattern.ends_with('*')) {
+        } else if wildcard_count == 1 {
+            // Single wildcard patterns are simple regardless of position
             WildcardComplexity::Simple
         } else if wildcard_count <= 2 && (wildcard_count as f64 / total_chars as f64) < 0.5 {
             WildcardComplexity::Medium
@@ -250,45 +276,15 @@ pub struct WildcardSearchResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dictionary::{Dictionary, TermEntry};
+    use crate::dictionary::Dictionary;
 
     fn create_test_dictionary() -> Dictionary {
         let mut dict = Dictionary::new();
-        dict.terms.insert(
-            "hello".to_string(),
-            TermEntry {
-                frequency: 1,
-                documents: vec!["doc1.fb2".to_string()],
-            },
-        );
-        dict.terms.insert(
-            "help".to_string(),
-            TermEntry {
-                frequency: 1,
-                documents: vec!["doc2.fb2".to_string()],
-            },
-        );
-        dict.terms.insert(
-            "world".to_string(),
-            TermEntry {
-                frequency: 1,
-                documents: vec!["doc1.fb2".to_string()],
-            },
-        );
-        dict.terms.insert(
-            "wonderful".to_string(),
-            TermEntry {
-                frequency: 1,
-                documents: vec!["doc3.fb2".to_string()],
-            },
-        );
-        dict.terms.insert(
-            "testing".to_string(),
-            TermEntry {
-                frequency: 1,
-                documents: vec!["doc2.fb2".to_string()],
-            },
-        );
+        dict.add_term("hello".to_string(), "doc1.fb2".to_string());
+        dict.add_term("help".to_string(), "doc2.fb2".to_string());
+        dict.add_term("world".to_string(), "doc1.fb2".to_string());
+        dict.add_term("wonderful".to_string(), "doc3.fb2".to_string());
+        dict.add_term("testing".to_string(), "doc2.fb2".to_string());
         dict
     }
 

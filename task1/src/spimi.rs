@@ -1,5 +1,5 @@
 use crate::{Dictionary, TermEntry};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
@@ -178,13 +178,15 @@ impl SPIMIIndexer {
                 current_lines[block_idx] = block_readers[block_idx].next().transpose()?;
             }
 
-            // Deduplicate and create dictionary entry
-            all_docs.sort();
-            all_docs.dedup();
+            // Convert to HashSet for deduplication
+            let documents_set: HashSet<String> = all_docs.into_iter().collect();
 
-            dictionary.terms.insert(term.clone(), TermEntry {
-                frequency: all_docs.len() as u32,
-                documents: all_docs,
+            let start_pos = dictionary.find_or_add_term(&term);
+            dictionary.terms.insert(start_pos, TermEntry {
+                frequency: documents_set.len() as u32,
+                documents: documents_set,
+                start_pos,
+                length: term.len(),
             });
 
             merged_terms += 1;
@@ -282,14 +284,16 @@ impl ParallelSPIMIIndexer {
         let mut final_dict = Dictionary::new();
 
         for dict in dictionaries {
-            for (term, entry) in dict.terms {
-                let final_entry = final_dict.terms.entry(term).or_insert_with(|| TermEntry {
-                    frequency: 0,
-                    documents: Vec::new(),
-                });
-
-                final_entry.frequency += entry.frequency;
-                final_entry.documents.extend(entry.documents);
+            for (&start_pos, entry) in &dict.terms {
+                // Get the actual term from the dictionary
+                if let Some(term) = dict.get_term(start_pos) {
+                    // Add the term to the final dictionary using the proper method
+                    for doc in &entry.documents {
+                        for _ in 0..entry.frequency {
+                            final_dict.add_term(term.to_string(), doc.clone());
+                        }
+                    }
+                }
             }
 
             final_dict.total_words += dict.total_words;
@@ -297,10 +301,8 @@ impl ParallelSPIMIIndexer {
             final_dict.collection_size_bytes += dict.collection_size_bytes;
         }
 
-        // Deduplicate documents in final merge
+        // Documents are already deduplicated in HashSet
         for entry in final_dict.terms.values_mut() {
-            entry.documents.sort();
-            entry.documents.dedup();
             entry.frequency = entry.documents.len() as u32;
         }
 

@@ -14,7 +14,7 @@ pub struct IncidenceMatrix {
 
 impl IncidenceMatrix {
     pub fn from_dictionary(dictionary: &Dictionary) -> Self {
-        let mut terms: Vec<String> = dictionary.terms.keys().cloned().collect();
+        let mut terms = dictionary.extract_terms_parallel();
         terms.sort();
 
         let mut documents: HashSet<String> = HashSet::new();
@@ -29,7 +29,10 @@ impl IncidenceMatrix {
         let mut matrix = Vec::new();
         for term in &terms {
             let mut row = BitVec::from_elem(documents.len(), false);
-            if let Some(term_entry) = dictionary.terms.get(term) {
+            let start_pos = dictionary.terms.keys()
+                .find(|&&pos| dictionary.get_term(pos).unwrap() == term);
+            if let Some(&pos) = start_pos {
+                let term_entry = &dictionary.terms[&pos];
                 for doc in &term_entry.documents {
                     if let Some(doc_idx) = documents.iter().position(|d| d == doc) {
                         row.set(doc_idx, true);

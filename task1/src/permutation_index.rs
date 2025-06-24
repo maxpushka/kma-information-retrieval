@@ -23,7 +23,7 @@ impl PermutationIndex {
         );
 
         let index = Arc::new(Mutex::new(HashMap::new()));
-        let terms: Vec<&String> = dictionary.terms.keys().collect();
+        let terms = dictionary.extract_terms_parallel();
 
         // Process terms in parallel chunks
         let chunk_size = 1000;
@@ -42,7 +42,7 @@ impl PermutationIndex {
                         local_rotations
                             .entry(rotation)
                             .or_insert_with(HashSet::new)
-                            .insert(term.to_string());
+                            .insert(term.clone());
                     }
                 }
 
@@ -166,32 +166,14 @@ impl PermutationIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dictionary::{Dictionary, TermEntry};
+    use crate::dictionary::Dictionary;
 
     #[test]
     fn test_permutation_index_prefix() {
         let mut dict = Dictionary::new();
-        dict.terms.insert(
-            "hello".to_string(),
-            TermEntry {
-                frequency: 1,
-                documents: vec!["doc1".to_string()],
-            },
-        );
-        dict.terms.insert(
-            "help".to_string(),
-            TermEntry {
-                frequency: 1,
-                documents: vec!["doc1".to_string()],
-            },
-        );
-        dict.terms.insert(
-            "world".to_string(),
-            TermEntry {
-                frequency: 1,
-                documents: vec!["doc1".to_string()],
-            },
-        );
+        dict.add_term("hello".to_string(), "doc1".to_string());
+        dict.add_term("help".to_string(), "doc1".to_string());
+        dict.add_term("world".to_string(), "doc1".to_string());
 
         let perm_index = PermutationIndex::from_dictionary(&dict);
 
@@ -204,27 +186,9 @@ mod tests {
     #[test]
     fn test_permutation_index_suffix() {
         let mut dict = Dictionary::new();
-        dict.terms.insert(
-            "testing".to_string(),
-            TermEntry {
-                frequency: 1,
-                documents: vec!["doc1".to_string()],
-            },
-        );
-        dict.terms.insert(
-            "running".to_string(),
-            TermEntry {
-                frequency: 1,
-                documents: vec!["doc1".to_string()],
-            },
-        );
-        dict.terms.insert(
-            "hello".to_string(),
-            TermEntry {
-                frequency: 1,
-                documents: vec!["doc1".to_string()],
-            },
-        );
+        dict.add_term("testing".to_string(), "doc1".to_string());
+        dict.add_term("running".to_string(), "doc1".to_string());
+        dict.add_term("hello".to_string(), "doc1".to_string());
 
         let perm_index = PermutationIndex::from_dictionary(&dict);
 
@@ -237,27 +201,9 @@ mod tests {
     #[test]
     fn test_permutation_index_middle() {
         let mut dict = Dictionary::new();
-        dict.terms.insert(
-            "hello".to_string(),
-            TermEntry {
-                frequency: 1,
-                documents: vec!["doc1".to_string()],
-            },
-        );
-        dict.terms.insert(
-            "world".to_string(),
-            TermEntry {
-                frequency: 1,
-                documents: vec!["doc1".to_string()],
-            },
-        );
-        dict.terms.insert(
-            "wonderful".to_string(),
-            TermEntry {
-                frequency: 1,
-                documents: vec!["doc1".to_string()],
-            },
-        );
+        dict.add_term("hello".to_string(), "doc1".to_string());
+        dict.add_term("world".to_string(), "doc1".to_string());
+        dict.add_term("wonderful".to_string(), "doc1".to_string());
 
         let perm_index = PermutationIndex::from_dictionary(&dict);
 

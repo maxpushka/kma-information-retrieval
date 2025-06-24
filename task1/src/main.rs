@@ -1,7 +1,7 @@
 use clap::{Arg, Command};
 use grimoire::{
     build_dictionary, collect_fb2_files, BigramIndex, CoordinateIndex, FB2Parser, IncidenceMatrix,
-    InvertedIndex, ParallelSPIMIIndexer, ParquetLoader, QueryParser, WildcardSearchEngine,
+    CompressedInvertedIndex, ParallelSPIMIIndexer, ParquetLoader, QueryParser, WildcardSearchEngine,
 };
 use std::fs;
 use std::time::Instant;
@@ -185,7 +185,7 @@ fn handle_build_command(matches: &clap::ArgMatches) -> Result<(), Box<dyn std::e
     let incidence_size = incidence_matrix.memory_size();
 
     let inverted_start = Instant::now();
-    let inverted_index = InvertedIndex::from_dictionary(&dictionary);
+    let inverted_index = CompressedInvertedIndex::from_dictionary(&dictionary);
     let inverted_time = inverted_start.elapsed();
     let inverted_size = inverted_index.memory_size();
 
@@ -292,8 +292,9 @@ fn handle_build_command(matches: &clap::ArgMatches) -> Result<(), Box<dyn std::e
             + dictionary
                 .terms
                 .iter()
-                .map(|(k, v)| k.len() + std::mem::size_of_val(v))
+                .map(|(k, v)| std::mem::size_of_val(k) + std::mem::size_of_val(v))
                 .sum::<usize>()
+            + dictionary.terms_string.len()
     );
     println!("Incidence Matrix:      {} bytes", incidence_size);
     println!("Inverted Index:        {} bytes", inverted_size);
@@ -414,7 +415,7 @@ fn handle_search_command(matches: &clap::ArgMatches) -> Result<(), Box<dyn std::
     let incidence_matrix: IncidenceMatrix = bincode::deserialize(&matrix_data)?;
 
     let index_data = fs::read(&index_path)?;
-    let inverted_index: InvertedIndex = bincode::deserialize(&index_data)?;
+    let inverted_index: CompressedInvertedIndex = bincode::deserialize(&index_data)?;
 
     let bigram_data = fs::read(&bigram_path)?;
     let bigram_index: BigramIndex = bincode::deserialize(&bigram_data)?;
@@ -622,7 +623,7 @@ fn handle_parquet_build_command(matches: &clap::ArgMatches) -> Result<(), Box<dy
     let incidence_size = incidence_matrix.memory_size();
 
     let inverted_start = Instant::now();
-    let inverted_index = InvertedIndex::from_dictionary(&dictionary);
+    let inverted_index = CompressedInvertedIndex::from_dictionary(&dictionary);
     let inverted_time = inverted_start.elapsed();
     let inverted_size = inverted_index.memory_size();
 

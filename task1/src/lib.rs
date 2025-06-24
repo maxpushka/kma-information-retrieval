@@ -163,7 +163,16 @@ pub fn build_dictionary(
                 .map(|word| (word, document_name.clone()))
                 .collect();
 
+            println!(
+                "    Merging {} terms from {} into dictionary",
+                terms.len(),
+                document_name
+            );
             dictionary.merge_terms(terms);
+            println!(
+                "    Merged terms from {} into dictionary",
+                document_name
+            );
 
             if merged_count <= 5 || merged_count % 50 == 0 {
                 println!(

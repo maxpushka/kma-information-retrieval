@@ -40,7 +40,7 @@ impl SuffixTree {
         );
 
         let tree = Arc::new(Mutex::new(SuffixTree::new()));
-        let terms: Vec<&String> = dictionary.terms.keys().collect();
+        let terms = dictionary.extract_terms_parallel();
 
         // Process terms in parallel chunks for better progress reporting
         let chunk_size = 1000;
@@ -161,32 +161,14 @@ impl SuffixTree {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dictionary::{Dictionary, TermEntry};
+    use crate::dictionary::Dictionary;
 
     #[test]
     fn test_suffix_tree_basic() {
         let mut dict = Dictionary::new();
-        dict.terms.insert(
-            "cat".to_string(),
-            TermEntry {
-                frequency: 1,
-                documents: vec!["doc1".to_string()],
-            },
-        );
-        dict.terms.insert(
-            "car".to_string(),
-            TermEntry {
-                frequency: 1,
-                documents: vec!["doc1".to_string()],
-            },
-        );
-        dict.terms.insert(
-            "card".to_string(),
-            TermEntry {
-                frequency: 1,
-                documents: vec!["doc1".to_string()],
-            },
-        );
+        dict.add_term("cat".to_string(), "doc1".to_string());
+        dict.add_term("car".to_string(), "doc1".to_string());
+        dict.add_term("card".to_string(), "doc1".to_string());
 
         let tree = SuffixTree::from_dictionary(&dict);
 
@@ -203,27 +185,9 @@ mod tests {
     #[test]
     fn test_wildcard_queries() {
         let mut dict = Dictionary::new();
-        dict.terms.insert(
-            "test".to_string(),
-            TermEntry {
-                frequency: 1,
-                documents: vec!["doc1".to_string()],
-            },
-        );
-        dict.terms.insert(
-            "testing".to_string(),
-            TermEntry {
-                frequency: 1,
-                documents: vec!["doc1".to_string()],
-            },
-        );
-        dict.terms.insert(
-            "tester".to_string(),
-            TermEntry {
-                frequency: 1,
-                documents: vec!["doc1".to_string()],
-            },
-        );
+        dict.add_term("test".to_string(), "doc1".to_string());
+        dict.add_term("testing".to_string(), "doc1".to_string());
+        dict.add_term("tester".to_string(), "doc1".to_string());
 
         let tree = SuffixTree::from_dictionary(&dict);
 

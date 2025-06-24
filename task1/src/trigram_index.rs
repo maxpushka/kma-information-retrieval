@@ -23,7 +23,7 @@ impl TrigramIndex {
         );
 
         let index = Arc::new(Mutex::new(HashMap::new()));
-        let terms: Vec<&String> = dictionary.terms.keys().collect();
+        let terms = dictionary.extract_terms_parallel();
 
         // Process terms in parallel chunks
         let chunk_size = 1000;
@@ -42,7 +42,7 @@ impl TrigramIndex {
                         local_trigrams
                             .entry(trigram)
                             .or_insert_with(HashSet::new)
-                            .insert(term.to_string());
+                            .insert(term.clone());
                     }
                 }
 
@@ -104,7 +104,12 @@ impl TrigramIndex {
         let required_trigrams = self.extract_required_trigrams(pattern);
 
         if required_trigrams.is_empty() {
-            return HashSet::new();
+            // If no useful trigrams can be extracted, fall back to brute force pattern matching
+            let all_terms: HashSet<String> = self.index.values().flatten().cloned().collect();
+            return all_terms
+                .into_iter()
+                .filter(|term| self.matches_pattern(term, pattern))
+                .collect();
         }
 
         let mut candidates: Option<HashSet<String>> = None;
@@ -211,42 +216,46 @@ impl TrigramIndex {
         self.matches_wildcard(term, pattern)
     }
 
-    fn matches_wildcard(&self, text: &str, pattern: &str) -> bool {
-        let text_chars: Vec<char> = text.chars().collect();
-        let pattern_chars: Vec<char> = pattern.chars().collect();
-
-        self.matches_wildcard_recursive(&text_chars, &pattern_chars, 0, 0)
+    pub fn matches_wildcard(&self, text: &str, pattern: &str) -> bool {
+        // Use a well-tested glob matching function
+        self.glob_match(text, pattern)
     }
-
-    fn matches_wildcard_recursive(
-        &self,
-        text: &[char],
-        pattern: &[char],
-        text_idx: usize,
-        pattern_idx: usize,
-    ) -> bool {
-        if pattern_idx >= pattern.len() {
-            return text_idx >= text.len();
-        }
-
-        if text_idx >= text.len() {
-            return pattern[pattern_idx..].iter().all(|&c| c == '*');
-        }
-
-        match pattern[pattern_idx] {
-            '*' => {
-                self.matches_wildcard_recursive(text, pattern, text_idx + 1, pattern_idx)
-                    || self.matches_wildcard_recursive(text, pattern, text_idx, pattern_idx + 1)
+    
+    fn glob_match(&self, text: &str, pattern: &str) -> bool {
+        let text_bytes = text.as_bytes();
+        let pattern_bytes = pattern.as_bytes();
+        self.glob_match_bytes(text_bytes, pattern_bytes)
+    }
+    
+    fn glob_match_bytes(&self, text: &[u8], pattern: &[u8]) -> bool {
+        let mut text_pos = 0;
+        let mut pattern_pos = 0;
+        let mut star_pos = None;
+        let mut text_backup = 0;
+        
+        while text_pos < text.len() {
+            if pattern_pos < pattern.len() && 
+               (pattern[pattern_pos] == text[text_pos] || pattern[pattern_pos] == b'?') {
+                text_pos += 1;
+                pattern_pos += 1;
+            } else if pattern_pos < pattern.len() && pattern[pattern_pos] == b'*' {
+                star_pos = Some(pattern_pos);
+                text_backup = text_pos;
+                pattern_pos += 1;
+            } else if let Some(star) = star_pos {
+                pattern_pos = star + 1;
+                text_backup += 1;
+                text_pos = text_backup;
+            } else {
+                return false;
             }
-            '?' => self.matches_wildcard_recursive(text, pattern, text_idx + 1, pattern_idx + 1),
-            ch => {
-                if text[text_idx] == ch {
-                    self.matches_wildcard_recursive(text, pattern, text_idx + 1, pattern_idx + 1)
-                } else {
-                    false
-                }
-            }
         }
+        
+        while pattern_pos < pattern.len() && pattern[pattern_pos] == b'*' {
+            pattern_pos += 1;
+        }
+        
+        pattern_pos == pattern.len()
     }
 
     pub fn memory_size(&self) -> usize {
@@ -267,7 +276,7 @@ impl TrigramIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dictionary::{Dictionary, TermEntry};
+    use crate::dictionary::Dictionary;
 
     #[test]
     fn test_trigram_generation() {
@@ -282,27 +291,9 @@ mod tests {
     #[test]
     fn test_trigram_search() {
         let mut dict = Dictionary::new();
-        dict.terms.insert(
-            "hello".to_string(),
-            TermEntry {
-                frequency: 1,
-                documents: vec!["doc1".to_string()],
-            },
-        );
-        dict.terms.insert(
-            "help".to_string(),
-            TermEntry {
-                frequency: 1,
-                documents: vec!["doc1".to_string()],
-            },
-        );
-        dict.terms.insert(
-            "world".to_string(),
-            TermEntry {
-                frequency: 1,
-                documents: vec!["doc1".to_string()],
-            },
-        );
+        dict.add_term("hello".to_string(), "doc1".to_string());
+        dict.add_term("help".to_string(), "doc1".to_string());
+        dict.add_term("world".to_string(), "doc1".to_string());
 
         let trigram_index = TrigramIndex::from_dictionary(&dict);
 
@@ -315,27 +306,9 @@ mod tests {
     #[test]
     fn test_trigram_wildcard() {
         let mut dict = Dictionary::new();
-        dict.terms.insert(
-            "testing".to_string(),
-            TermEntry {
-                frequency: 1,
-                documents: vec!["doc1".to_string()],
-            },
-        );
-        dict.terms.insert(
-            "test".to_string(),
-            TermEntry {
-                frequency: 1,
-                documents: vec!["doc1".to_string()],
-            },
-        );
-        dict.terms.insert(
-            "contest".to_string(),
-            TermEntry {
-                frequency: 1,
-                documents: vec!["doc1".to_string()],
-            },
-        );
+        dict.add_term("testing".to_string(), "doc1".to_string());
+        dict.add_term("test".to_string(), "doc1".to_string());
+        dict.add_term("contest".to_string(), "doc1".to_string());
 
         let trigram_index = TrigramIndex::from_dictionary(&dict);
 
