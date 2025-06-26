@@ -162,7 +162,7 @@ fn handle_build_command(matches: &clap::ArgMatches) -> Result<(), Box<dyn std::e
     let start_time = Instant::now();
     let regular_dictionary = build_dictionary(&files, true)?;
     let build_time = start_time.elapsed();
-    
+
     println!("Compressing dictionary...");
     let compress_start = Instant::now();
     let dictionary = grimoire::CompressedDictionary::from_dictionary(&regular_dictionary);
@@ -186,8 +186,7 @@ fn handle_build_command(matches: &clap::ArgMatches) -> Result<(), Box<dyn std::e
     println!("\n=== BUILDING SEARCH STRUCTURES ===");
 
     let incidence_start = Instant::now();
-    let temp_dict = dictionary.to_regular_dictionary();
-    let incidence_matrix = IncidenceMatrix::from_dictionary(&temp_dict);
+    let incidence_matrix = IncidenceMatrix::from_dictionary(&dictionary);
     let incidence_time = incidence_start.elapsed();
     let incidence_size = incidence_matrix.memory_size();
 
@@ -197,10 +196,10 @@ fn handle_build_command(matches: &clap::ArgMatches) -> Result<(), Box<dyn std::e
     let inverted_size = inverted_index.memory_size();
 
     println!("Building bigram index...");
-    println!("  Dictionary has {} unique terms", dictionary.terms.len());
+    println!("  Dictionary has {} unique terms", dictionary.sorted_terms.len());
     let bigram_start = Instant::now();
     let parser = FB2Parser::new();
-    let bigram_index = BigramIndex::from_dictionary_with_parser(&temp_dict, |doc_name| {
+    let bigram_index = BigramIndex::from_dictionary_with_parser(&dictionary, |doc_name| {
         println!("  Processing document for bigram index: {}", doc_name);
         let file_path = std::path::Path::new(input_dir).join(doc_name);
         let result = parser.parse_file(&file_path);
@@ -220,7 +219,7 @@ fn handle_build_command(matches: &clap::ArgMatches) -> Result<(), Box<dyn std::e
 
     println!("Building coordinate index...");
     let coordinate_start = Instant::now();
-    let coordinate_index = CoordinateIndex::from_dictionary_with_parser(&temp_dict, |doc_name| {
+    let coordinate_index = CoordinateIndex::from_dictionary_with_parser(&dictionary, |doc_name| {
         println!("  Processing document for coordinate index: {}", doc_name);
         let file_path = std::path::Path::new(input_dir).join(doc_name);
         let result = parser.parse_file(&file_path);
@@ -293,16 +292,6 @@ fn handle_build_command(matches: &clap::ArgMatches) -> Result<(), Box<dyn std::e
     println!("Saved wildcard engine to: {}", wildcard_path);
 
     println!("\n=== STRUCTURE COMPARISON ===");
-    println!(
-        "Dictionary (HashMap):  {} bytes",
-        std::mem::size_of_val(&dictionary)
-            + dictionary
-                .terms
-                .iter()
-                .map(|(k, v)| std::mem::size_of_val(k) + std::mem::size_of_val(v))
-                .sum::<usize>()
-            + dictionary.terms_string_len()
-    );
     println!("Incidence Matrix:      {} bytes", incidence_size);
     println!("Inverted Index:        {} bytes", inverted_size);
     println!("Bigram Index:          {} bytes", bigram_size);
@@ -578,13 +567,13 @@ fn handle_parquet_build_command(matches: &clap::ArgMatches) -> Result<(), Box<dy
 
         let build_time = build_start.elapsed();
         println!("SPIMI indexing completed in {:.2?}", build_time);
-        
+
         println!("Compressing dictionary...");
         let compress_start = Instant::now();
         let dictionary = grimoire::CompressedDictionary::from_dictionary(&regular_dictionary);
         let compress_time = compress_start.elapsed();
         println!("Dictionary compression completed in {:.2?}", compress_time);
-        
+
         dictionary
     } else {
         println!("Building dictionary using traditional method");
@@ -617,13 +606,13 @@ fn handle_parquet_build_command(matches: &clap::ArgMatches) -> Result<(), Box<dy
 
         let build_time = build_start.elapsed();
         println!("Traditional indexing completed in {:.2?}", build_time);
-        
+
         println!("Compressing dictionary...");
         let compress_start = Instant::now();
         let dictionary = grimoire::CompressedDictionary::from_dictionary(&regular_dictionary);
         let compress_time = compress_start.elapsed();
         println!("Dictionary compression completed in {:.2?}", compress_time);
-        
+
         dictionary
     };
 
@@ -639,8 +628,7 @@ fn handle_parquet_build_command(matches: &clap::ArgMatches) -> Result<(), Box<dy
     println!("\n=== BUILDING SEARCH STRUCTURES ===");
 
     let incidence_start = Instant::now();
-    let temp_dict = dictionary.to_regular_dictionary();
-    let incidence_matrix = IncidenceMatrix::from_dictionary(&temp_dict);
+    let incidence_matrix = IncidenceMatrix::from_dictionary(&dictionary);
     let incidence_time = incidence_start.elapsed();
     let incidence_size = incidence_matrix.memory_size();
 

@@ -1,4 +1,4 @@
-use crate::{Dictionary, CompressedDictionary};
+use crate::CompressedDictionary;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -33,10 +33,10 @@ impl SuffixTree {
         }
     }
 
-    pub fn from_dictionary(dictionary: &Dictionary) -> Self {
+    pub fn from_dictionary(dictionary: &CompressedDictionary) -> Self {
         println!(
             "      SuffixTree: Processing {} terms in parallel",
-            dictionary.terms.len()
+            dictionary.sorted_terms.len()
         );
 
         let tree = Arc::new(Mutex::new(SuffixTree::new()));
@@ -79,7 +79,7 @@ impl SuffixTree {
     pub fn from_compressed_dictionary(dictionary: &CompressedDictionary) -> Self {
         println!(
             "      SuffixTree: Processing {} terms in parallel",
-            dictionary.terms.len()
+            dictionary.sorted_terms.len()
         );
 
         let tree = Arc::new(Mutex::new(SuffixTree::new()));
@@ -218,7 +218,7 @@ impl SuffixTree {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dictionary::Dictionary;
+    use crate::dictionary::{Dictionary, CompressedDictionary};
 
     #[test]
     fn test_suffix_tree_basic() {
@@ -227,7 +227,8 @@ mod tests {
         dict.add_term("car".to_string(), "doc1".to_string());
         dict.add_term("card".to_string(), "doc1".to_string());
 
-        let tree = SuffixTree::from_dictionary(&dict);
+        let compressed_dict = CompressedDictionary::from_dictionary(&dict);
+        let tree = SuffixTree::from_dictionary(&compressed_dict);
 
         let results = tree.find_matching_terms("ca*");
         assert!(results.contains("cat"));
@@ -246,7 +247,8 @@ mod tests {
         dict.add_term("testing".to_string(), "doc1".to_string());
         dict.add_term("tester".to_string(), "doc1".to_string());
 
-        let tree = SuffixTree::from_dictionary(&dict);
+        let compressed_dict = CompressedDictionary::from_dictionary(&dict);
+        let tree = SuffixTree::from_dictionary(&compressed_dict);
 
         let results = tree.find_matching_terms("test*");
         assert_eq!(results.len(), 3);

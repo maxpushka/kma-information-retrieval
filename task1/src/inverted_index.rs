@@ -101,18 +101,18 @@ pub struct CompressedInvertedIndex {
 }
 
 impl InvertedIndex {
-    pub fn from_dictionary(dictionary: &Dictionary) -> Self {
+    pub fn from_dictionary(dictionary: &CompressedDictionary) -> Self {
         // Use parallel processing for large dictionaries
         const PARALLEL_THRESHOLD: usize = 1000;
         
-        if dictionary.terms.len() < PARALLEL_THRESHOLD {
+        if dictionary.sorted_terms.len() < PARALLEL_THRESHOLD {
             // Sequential processing for small dictionaries
             let mut index = HashMap::new();
             let mut documents = HashSet::new();
 
-            for (&start_pos, term_entry) in &dictionary.terms {
-                let term = dictionary.get_term(start_pos).unwrap().to_string();
-                index.insert(term, term_entry.documents.clone());
+            for (i, term) in dictionary.sorted_terms.iter().enumerate() {
+                let term_entry = &dictionary.term_entries[i];
+                index.insert(term.clone(), term_entry.documents.clone());
                 for doc in &term_entry.documents {
                     documents.insert(doc.clone());
                 }
@@ -123,19 +123,18 @@ impl InvertedIndex {
             InvertedIndex { index, documents }
         } else {
             // Parallel processing for large dictionaries
-            let term_entries: Vec<_> = dictionary.terms.iter().collect();
+            let term_data: Vec<_> = dictionary.sorted_terms.iter().zip(dictionary.term_entries.iter()).collect();
             
             // Build index in parallel
-            let index: HashMap<String, HashSet<String>> = term_entries
+            let index: HashMap<String, HashSet<String>> = term_data
                 .par_iter()
-                .map(|(&start_pos, term_entry)| {
-                    let term = dictionary.get_term(start_pos).unwrap().to_string();
-                    (term, term_entry.documents.clone())
+                .map(|(term, term_entry)| {
+                    ((*term).clone(), term_entry.documents.clone())
                 })
                 .collect();
 
             // Collect all unique documents in parallel
-            let all_docs: HashSet<String> = term_entries
+            let all_docs: HashSet<String> = term_data
                 .par_iter()
                 .flat_map(|(_, term_entry)| term_entry.documents.par_iter().cloned())
                 .collect();
@@ -344,7 +343,8 @@ impl CompressedInvertedIndex {
         println!("CompressedInvertedIndex: Creating compressed index from dictionary...");
         
         // Build regular index first, then compress
-        let regular_index = InvertedIndex::from_dictionary(dictionary);
+        let compressed_dict = CompressedDictionary::from_dictionary(dictionary);
+                let regular_index = InvertedIndex::from_dictionary(&compressed_dict);
         Self::from_inverted_index(&regular_index)
     }
     
@@ -355,17 +355,16 @@ impl CompressedInvertedIndex {
         // Use parallel processing for large dictionaries
         const PARALLEL_THRESHOLD: usize = 1000;
         
-        if dictionary.terms.len() < PARALLEL_THRESHOLD {
+        if dictionary.sorted_terms.len() < PARALLEL_THRESHOLD {
             // Sequential processing for small dictionaries
             let mut index = HashMap::new();
             let mut documents = HashSet::new();
 
-            for (&start_pos, term_entry) in &dictionary.terms {
-                if let Some(term) = dictionary.get_term(start_pos) {
-                    index.insert(term.to_string(), term_entry.documents.clone());
-                    for doc in &term_entry.documents {
-                        documents.insert(doc.clone());
-                    }
+            for (i, term) in dictionary.sorted_terms.iter().enumerate() {
+                let term_entry = &dictionary.term_entries[i];
+                index.insert(term.clone(), term_entry.documents.clone());
+                for doc in &term_entry.documents {
+                    documents.insert(doc.clone());
                 }
             }
 
@@ -376,22 +375,18 @@ impl CompressedInvertedIndex {
             Self::from_inverted_index(&regular_index)
         } else {
             // Parallel processing for large dictionaries
-            let term_entries: Vec<_> = dictionary.terms.iter().collect();
+            let term_data: Vec<_> = dictionary.sorted_terms.iter().zip(dictionary.term_entries.iter()).collect();
             
             // Build index in parallel
-            let index: HashMap<String, HashSet<String>> = term_entries
+            let index: HashMap<String, HashSet<String>> = term_data
                 .par_iter()
-                .filter_map(|(&start_pos, term_entry)| {
-                    if let Some(term) = dictionary.get_term(start_pos) {
-                        Some((term.to_string(), term_entry.documents.clone()))
-                    } else {
-                        None
-                    }
+                .map(|(term, term_entry)| {
+                    ((*term).clone(), term_entry.documents.clone())
                 })
                 .collect();
 
             // Collect all unique documents in parallel
-            let all_docs: HashSet<String> = term_entries
+            let all_docs: HashSet<String> = term_data
                 .par_iter()
                 .flat_map(|(_, term_entry)| term_entry.documents.par_iter().cloned())
                 .collect();

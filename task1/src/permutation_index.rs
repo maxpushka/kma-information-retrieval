@@ -1,4 +1,4 @@
-use crate::{Dictionary, CompressedDictionary};
+use crate::CompressedDictionary;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -16,10 +16,10 @@ impl PermutationIndex {
         }
     }
 
-    pub fn from_dictionary(dictionary: &Dictionary) -> Self {
+    pub fn from_dictionary(dictionary: &CompressedDictionary) -> Self {
         println!(
             "      PermutationIndex: Processing {} terms in parallel",
-            dictionary.terms.len()
+            dictionary.sorted_terms.len()
         );
 
         let index = Arc::new(Mutex::new(HashMap::new()));
@@ -75,7 +75,7 @@ impl PermutationIndex {
     pub fn from_compressed_dictionary(dictionary: &CompressedDictionary) -> Self {
         println!(
             "      PermutationIndex: Processing {} terms in parallel",
-            dictionary.terms.len()
+            dictionary.sorted_terms.len()
         );
 
         let index = Arc::new(Mutex::new(HashMap::new()));
@@ -222,7 +222,7 @@ impl PermutationIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dictionary::Dictionary;
+    use crate::dictionary::{Dictionary, CompressedDictionary};
 
     #[test]
     fn test_permutation_index_prefix() {
@@ -231,7 +231,8 @@ mod tests {
         dict.add_term("help".to_string(), "doc1".to_string());
         dict.add_term("world".to_string(), "doc1".to_string());
 
-        let perm_index = PermutationIndex::from_dictionary(&dict);
+        let compressed_dict = CompressedDictionary::from_dictionary(&dict);
+        let perm_index = PermutationIndex::from_dictionary(&compressed_dict);
 
         let results = perm_index.find_matching_terms("hel*");
         assert!(results.contains("hello"));
@@ -246,7 +247,8 @@ mod tests {
         dict.add_term("running".to_string(), "doc1".to_string());
         dict.add_term("hello".to_string(), "doc1".to_string());
 
-        let perm_index = PermutationIndex::from_dictionary(&dict);
+        let compressed_dict = CompressedDictionary::from_dictionary(&dict);
+        let perm_index = PermutationIndex::from_dictionary(&compressed_dict);
 
         let results = perm_index.find_matching_terms("*ing");
         assert!(results.contains("testing"));
@@ -261,7 +263,8 @@ mod tests {
         dict.add_term("world".to_string(), "doc1".to_string());
         dict.add_term("wonderful".to_string(), "doc1".to_string());
 
-        let perm_index = PermutationIndex::from_dictionary(&dict);
+        let compressed_dict = CompressedDictionary::from_dictionary(&dict);
+        let perm_index = PermutationIndex::from_dictionary(&compressed_dict);
 
         let results = perm_index.find_matching_terms("w*l");
         assert!(results.contains("world"));

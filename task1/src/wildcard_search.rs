@@ -84,17 +84,7 @@ impl WildcardSearchEngine {
                 .par_iter()
                 .filter_map(|term| {
                     // Find the term in the dictionary by looking up its position
-                    self.dictionary.terms.iter().find_map(|(start_pos, entry)| {
-                        if let Some(dict_term) = self.dictionary.get_term(*start_pos) {
-                            if dict_term == term {
-                                Some(&entry.documents)
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }
-                    })
+                    self.dictionary.get_term_entry(term).map(|entry| &entry.documents)
                 })
                 .map(|docs| docs.iter().cloned().collect::<HashSet<String>>())
                 .collect()
@@ -104,17 +94,7 @@ impl WildcardSearchEngine {
                 .iter()
                 .filter_map(|term| {
                     // Find the term in the dictionary by looking up its position
-                    self.dictionary.terms.iter().find_map(|(start_pos, entry)| {
-                        if let Some(dict_term) = self.dictionary.get_term(*start_pos) {
-                            if dict_term == term {
-                                Some(&entry.documents)
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }
-                    })
+                    self.dictionary.get_term_entry(term).map(|entry| &entry.documents)
                 })
                 .map(|docs| docs.iter().cloned().collect::<HashSet<String>>())
                 .collect()

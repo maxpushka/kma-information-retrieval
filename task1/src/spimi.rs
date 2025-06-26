@@ -1,4 +1,4 @@
-use crate::{Dictionary, TermEntry};
+use crate::dictionary::Dictionary;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Write};
@@ -181,13 +181,11 @@ impl SPIMIIndexer {
             // Convert to HashSet for deduplication
             let documents_set: HashSet<String> = all_docs.into_iter().collect();
 
-            let start_pos = dictionary.find_or_add_term(&term);
-            dictionary.terms.insert(start_pos, TermEntry {
-                frequency: documents_set.len() as u32,
-                documents: documents_set,
-                start_pos,
-                length: term.len(),
-            });
+            dictionary.add_term(term.clone(), "".to_string());
+            if let Some(entry) = dictionary.terms.get_mut(&term) {
+                entry.frequency = documents_set.len() as u32;
+                entry.documents = documents_set;
+            }
 
             merged_terms += 1;
             if merged_terms % 10000 == 0 {
@@ -284,14 +282,11 @@ impl ParallelSPIMIIndexer {
         let mut final_dict = Dictionary::new();
 
         for dict in dictionaries {
-            for (&start_pos, entry) in &dict.terms {
-                // Get the actual term from the dictionary
-                if let Some(term) = dict.get_term(start_pos) {
-                    // Add the term to the final dictionary using the proper method
-                    for doc in &entry.documents {
-                        for _ in 0..entry.frequency {
-                            final_dict.add_term(term.to_string(), doc.clone());
-                        }
+            for (term, entry) in &dict.terms {
+                // Add the term to the final dictionary using the proper method
+                for doc in &entry.documents {
+                    for _ in 0..entry.frequency {
+                        final_dict.add_term(term.clone(), doc.clone());
                     }
                 }
             }

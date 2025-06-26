@@ -2,8 +2,8 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
-use crate::dictionary::Dictionary;
 use crate::query::{tokenize, QueryParser};
+use crate::CompressedDictionary;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BigramIndex {
@@ -13,7 +13,7 @@ pub struct BigramIndex {
 
 impl BigramIndex {
     pub fn from_dictionary_with_parser<F>(
-        dictionary: &Dictionary,
+        dictionary: &CompressedDictionary,
         file_parser: F,
     ) -> Result<Self, Box<dyn std::error::Error>>
     where
@@ -25,7 +25,7 @@ impl BigramIndex {
 
         // Collect unique documents first to avoid duplicate processing
         println!("    BigramIndex: Collecting unique documents");
-        for (_, term_entry) in &dictionary.terms {
+        for term_entry in &dictionary.term_entries {
             for document in &term_entry.documents {
                 documents.insert(document.clone());
             }

@@ -4,70 +4,60 @@ use std::fs;
 use std::io::Write;
 use rayon::prelude::*;
 
-/// Front-packing compression utilities for dictionary strings
+/// Front-packing compression for concatenated string dictionary
 mod front_packing {
-    use std::collections::HashMap;
-
-    /// A front-packed block containing terms with a common prefix
-    #[derive(Debug, Clone)]
-    pub struct FrontPackedBlock {
-        pub prefix_length: u8,        // Length of common prefix
-        pub term_count: u16,          // Number of terms in this block
-        pub suffixes: Vec<String>,    // Suffixes after removing common prefix
-    }
-
-    /// Front-pack a sorted list of terms
-    pub fn compress_terms(mut terms: Vec<String>) -> (Vec<u8>, HashMap<String, (usize, usize)>) {
+    /// Compress terms into a concatenated string with front-packing
+    /// Returns (concatenated_string, term_offsets_array)
+    pub fn compress_terms_to_string(mut terms: Vec<String>) -> (String, Vec<(usize, usize, usize, usize)>) {
         if terms.is_empty() {
-            return (Vec::new(), HashMap::new());
+            return (String::new(), Vec::new());
         }
 
-        // Sort terms lexicographically for optimal front-packing
+        // Sort terms lexicographically for front-packing
         terms.sort();
-        
-        let mut compressed_data = Vec::new();
-        let mut term_positions = HashMap::new();
-        let mut current_block_start = 0;
 
+        let mut concatenated_string = String::new();
+        let mut term_offsets = Vec::with_capacity(terms.len());
         let mut i = 0;
+
         while i < terms.len() {
-            // Find terms with common prefix starting at position i
+            // Find optimal block for front-packing
             let (block_end, prefix_len) = find_optimal_block(&terms, i);
-            
-            // Create front-packed block
             let block_terms = &terms[i..block_end];
-            let prefix = if prefix_len > 0 {
-                &block_terms[0][..prefix_len]
+
+            if prefix_len > 0 && block_terms.len() > 1 {
+                // Front-pack this block: store prefix once, then suffixes
+                let prefix = &block_terms[0][..prefix_len];
+
+                // Store prefix once
+                let prefix_start = concatenated_string.len();
+                concatenated_string.push_str(prefix);
+
+                // Store each term's suffix and track reconstruction info
+                for term in block_terms {
+                    let suffix = &term[prefix_len..];
+                    let suffix_start = concatenated_string.len();
+                    concatenated_string.push_str(suffix);
+                    let suffix_end = concatenated_string.len();
+
+                    // Store reconstruction info: (prefix_start, prefix_len, suffix_start, suffix_len)
+                    term_offsets.push((prefix_start, prefix_len, suffix_start, suffix_end - suffix_start));
+                }
             } else {
-                ""
-            };
-
-            // Record positions for each term in this block
-            for (block_idx, term) in block_terms.iter().enumerate() {
-                term_positions.insert(term.clone(), (current_block_start, block_idx));
+                // No compression benefit, store terms normally
+                for term in block_terms {
+                    let start_pos = concatenated_string.len();
+                    concatenated_string.push_str(term);
+                    let end_pos = concatenated_string.len();
+                    // For non-compressed terms: (term_start, term_len, 0, 0) - no separate prefix/suffix
+                    term_offsets.push((start_pos, end_pos - start_pos, 0, 0));
+                }
             }
 
-            // Encode block header
-            compressed_data.push(prefix_len as u8);
-            compressed_data.extend_from_slice(&(block_terms.len() as u16).to_le_bytes());
-            
-            // Store prefix
-            if prefix_len > 0 {
-                compressed_data.extend_from_slice(prefix.as_bytes());
-            }
-
-            // Store suffixes with their lengths
-            for term in block_terms {
-                let suffix = &term[prefix_len..];
-                compressed_data.push(suffix.len() as u8);
-                compressed_data.extend_from_slice(suffix.as_bytes());
-            }
-
-            current_block_start = compressed_data.len();
             i = block_end;
         }
 
-        (compressed_data, term_positions)
+        (concatenated_string, term_offsets)
     }
 
     /// Find the optimal block size and prefix length for front-packing
@@ -76,25 +66,24 @@ mod front_packing {
             return (start, 0);
         }
 
-        let _first_term = &terms[start];
         let mut best_end = start + 1;
         let mut best_prefix_len = 0;
         let mut best_savings = 0i32;
 
         // Try different block sizes and prefix lengths
-        for end in (start + 1)..=std::cmp::min(start + 255, terms.len()) {
+        for end in (start + 2)..=std::cmp::min(start + 16, terms.len()) {
             if let Some(prefix_len) = find_common_prefix(&terms[start..end]) {
                 if prefix_len == 0 {
                     continue;
                 }
 
-                // Calculate space savings with this configuration
-                let block_size = end - start;
-                let original_size: usize = terms[start..end].iter().map(|s| s.len() + 1).sum(); // +1 for length byte
-                let compressed_size = 3 + prefix_len + block_size + terms[start..end].iter().map(|s| s.len() - prefix_len).sum::<usize>(); // header + prefix + suffixes
+                // Calculate space savings: original size vs compressed size
+                let original_size: usize = terms[start..end].iter().map(|s| s.len()).sum();
+                // Compressed size = prefix_len + sum of suffix lengths
+                let compressed_size = prefix_len + terms[start..end].iter().map(|s| s.len() - prefix_len).sum::<usize>();
 
                 let savings = original_size as i32 - compressed_size as i32;
-                
+
                 if savings > best_savings {
                     best_savings = savings;
                     best_end = end;
@@ -103,15 +92,10 @@ mod front_packing {
             }
         }
 
-        // If no beneficial compression found, use single term
-        if best_savings <= 0 {
-            (start + 1, 0)
-        } else {
-            (best_end, best_prefix_len)
-        }
+        (best_end, best_prefix_len)
     }
 
-    /// Find the longest common prefix among a group of terms
+    /// Find the longest common prefix among terms
     fn find_common_prefix(terms: &[String]) -> Option<usize> {
         if terms.len() < 2 {
             return Some(0);
@@ -120,13 +104,11 @@ mod front_packing {
         let first = &terms[0];
         let mut prefix_len = 0;
 
-        for i in 0..first.len() {
-            let char_at_i = first.chars().nth(i)?;
-            
+        for (i, ch) in first.char_indices() {
             if terms.iter().all(|term| {
-                term.chars().nth(i).map_or(false, |c| c == char_at_i)
+                term.chars().nth(i).map_or(false, |c| c == ch)
             }) {
-                prefix_len = i + 1;
+                prefix_len = i + ch.len_utf8();
             } else {
                 break;
             }
@@ -135,18 +117,6 @@ mod front_packing {
         Some(prefix_len)
     }
 
-    /// Decompress front-packed data to retrieve a specific term
-    pub fn decompress_term(
-        _compressed_data: &[u8],
-        term_positions: &HashMap<String, (usize, usize)>,
-        term: &str,
-    ) -> Option<String> {
-        let (_block_start, _term_index) = term_positions.get(term)?;
-        
-        // This is a simplified version - in practice you'd need to decode the block
-        // For now, return the original term since we have it in the positions map
-        Some(term.to_string())
-    }
 }
 
 use front_packing::*;
@@ -155,15 +125,11 @@ use front_packing::*;
 pub struct TermEntry {
     pub frequency: u32,
     pub documents: HashSet<String>,
-    pub start_pos: usize,
-    pub length: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Dictionary {
-    pub terms: HashMap<usize, TermEntry>,
-    pub term_lookup: HashMap<String, usize>,
-    pub terms_string: String,
+    pub terms: HashMap<String, TermEntry>,
     pub total_words: u64,
     pub total_documents: u32,
     pub collection_size_bytes: u64,
@@ -171,12 +137,14 @@ pub struct Dictionary {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompressedDictionary {
-    /// Compressed term entries (same as regular dictionary)
-    pub terms: HashMap<usize, TermEntry>,
-    /// Front-packed compressed terms data
-    pub compressed_terms_data: Vec<u8>,
-    /// Mapping from term to (block_start, term_index_in_block)
-    pub term_positions: HashMap<String, (usize, usize)>,
+    /// Concatenated string containing all terms with front-packing
+    pub terms_string: String,
+    /// Term reconstruction info: (prefix_start, prefix_len, suffix_start, suffix_len)
+    pub term_offsets: Vec<(usize, usize, usize, usize)>,
+    /// Sorted list of terms for binary search
+    pub sorted_terms: Vec<String>,
+    /// Term entries mapped by index (parallel to sorted_terms)
+    pub term_entries: Vec<TermEntry>,
     /// Statistics
     pub total_words: u64,
     pub total_documents: u32,
@@ -187,29 +155,9 @@ pub struct CompressedDictionary {
 }
 
 impl Dictionary {
-    pub fn get_term(&self, start_pos: usize) -> Option<&str> {
-        if let Some(entry) = self.terms.get(&start_pos) {
-            Some(&self.terms_string[start_pos..start_pos + entry.length])
-        } else {
-            None
-        }
-    }
-
-    pub fn find_or_add_term(&mut self, term: &str) -> usize {
-        if let Some(&start_pos) = self.term_lookup.get(term) {
-            return start_pos;
-        }
-
-        let start_pos = self.terms_string.len();
-        self.terms_string.push_str(term);
-        self.term_lookup.insert(term.to_string(), start_pos);
-        start_pos
-    }
     pub fn new() -> Self {
         Dictionary {
             terms: HashMap::new(),
-            term_lookup: HashMap::new(),
-            terms_string: String::new(),
             total_words: 0,
             total_documents: 0,
             collection_size_bytes: 0,
@@ -217,12 +165,9 @@ impl Dictionary {
     }
 
     pub fn add_term(&mut self, term: String, document: String) {
-        let start_pos = self.find_or_add_term(&term);
-        let entry = self.terms.entry(start_pos).or_insert(TermEntry {
+        let entry = self.terms.entry(term).or_insert(TermEntry {
             frequency: 0,
             documents: HashSet::new(),
-            start_pos,
-            length: term.len(),
         });
         entry.frequency += 1;
         entry.documents.insert(document);
@@ -244,52 +189,24 @@ impl Dictionary {
         self.terms.len()
     }
 
-    /// High-performance method to extract all terms from terms_string into a Vec<String>
-    /// Uses parallel processing and memory-efficient techniques for large dictionaries
+    /// High-performance method to extract all terms into a Vec<String>
+    /// Uses parallel processing for large dictionaries
     pub fn extract_terms_parallel(&self) -> Vec<String> {
         if self.terms.is_empty() {
             return Vec::new();
         }
 
-        // Collect term positions and lengths for parallel processing
-        let mut term_info: Vec<(usize, usize)> = self.terms
-            .values()
-            .map(|entry| (entry.start_pos, entry.length))
-            .collect();
+        let mut terms: Vec<String> = self.terms.keys().cloned().collect();
 
-        // Sort by start position for better cache locality
-        term_info.sort_by_key(|&(start_pos, _)| start_pos);
+        const CHUNK_SIZE: usize = 1000;
 
-        const CHUNK_SIZE: usize = 1000; // Process in chunks for better parallelization
-
-        if term_info.len() < CHUNK_SIZE {
-            // For small dictionaries, use sequential processing to avoid overhead
-            term_info
-                .into_iter()
-                .map(|(start_pos, length)| {
-                    // Use unsafe slice access for maximum performance (bounds already verified)
-                    unsafe {
-                        let bytes = self.terms_string.as_bytes();
-                        let term_bytes = &bytes[start_pos..start_pos + length];
-                        String::from_utf8_unchecked(term_bytes.to_vec())
-                    }
-                })
-                .collect()
+        if terms.len() > CHUNK_SIZE {
+            terms.par_sort_unstable();
         } else {
-            // For large dictionaries, use parallel processing
-            term_info
-                .par_chunks(CHUNK_SIZE)
-                .flat_map(|chunk| {
-                    chunk
-                        .iter()
-                        .map(|&(start_pos, length)| {
-                            // Safe bounds checking for parallel processing
-                            self.terms_string[start_pos..start_pos + length].to_string()
-                        })
-                        .collect::<Vec<String>>()
-                })
-                .collect()
+            terms.sort_unstable();
         }
+
+        terms
     }
 
     /// High-performance method to extract terms sorted by frequency
@@ -299,38 +216,10 @@ impl Dictionary {
             return Vec::new();
         }
 
-        // Collect term data for parallel processing
-        let term_data: Vec<(usize, usize, u32)> = self.terms
-            .values()
-            .map(|entry| (entry.start_pos, entry.length, entry.frequency))
+        let mut results: Vec<(String, u32)> = self.terms
+            .iter()
+            .map(|(term, entry)| (term.clone(), entry.frequency))
             .collect();
-
-        const CHUNK_SIZE: usize = 1000;
-
-        let mut results = if term_data.len() < CHUNK_SIZE {
-            // Sequential for small dictionaries
-            term_data
-                .into_iter()
-                .map(|(start_pos, length, frequency)| {
-                    let term = self.terms_string[start_pos..start_pos + length].to_string();
-                    (term, frequency)
-                })
-                .collect::<Vec<_>>()
-        } else {
-            // Parallel for large dictionaries
-            term_data
-                .par_chunks(CHUNK_SIZE)
-                .flat_map(|chunk| {
-                    chunk
-                        .iter()
-                        .map(|&(start_pos, length, frequency)| {
-                            let term = self.terms_string[start_pos..start_pos + length].to_string();
-                            (term, frequency)
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .collect()
-        };
 
         // Sort by frequency (descending) using parallel sort for large datasets
         if results.len() > 10000 {
@@ -375,7 +264,7 @@ impl Dictionary {
         let sorted_terms = self.extract_terms_by_frequency_parallel();
 
         for (term, frequency) in sorted_terms {
-            let docs_count = self.terms.get(&self.term_lookup[&term]).unwrap().documents.len();
+            let docs_count = self.terms.get(&term).unwrap().documents.len();
             let line = format!(
                 "{}: {} (docs: {})\n",
                 term,
@@ -393,15 +282,26 @@ impl CompressedDictionary {
     /// Create a compressed dictionary from a regular dictionary
     pub fn from_dictionary(dictionary: &Dictionary) -> Self {
         println!("CompressedDictionary: Starting front-packing compression...");
-        
-        // Extract all terms for compression
+
+        // Extract all terms and sort them
         let terms = dictionary.extract_terms_parallel();
-        let original_size = dictionary.terms_string.len();
-        
-        // Apply front-packing compression
-        let (compressed_data, term_positions) = compress_terms(terms);
-        let compressed_size = compressed_data.len();
-        
+        let original_size = terms.iter().map(|term| term.len()).sum::<usize>();
+
+        // Apply front-packing compression to create concatenated string
+        let (terms_string, term_offsets) = compress_terms_to_string(terms.clone());
+        let compressed_size = terms_string.len();
+
+        // Create parallel arrays for binary search
+        let mut sorted_terms = terms.clone();
+        sorted_terms.sort();
+
+        let mut term_entries = Vec::with_capacity(sorted_terms.len());
+        for term in &sorted_terms {
+            if let Some(entry) = dictionary.terms.get(term) {
+                term_entries.push(entry.clone());
+            }
+        }
+
         let compression_ratio = if original_size > 0 {
             compressed_size as f64 / original_size as f64
         } else {
@@ -416,9 +316,10 @@ impl CompressedDictionary {
         );
 
         CompressedDictionary {
-            terms: dictionary.terms.clone(),
-            compressed_terms_data: compressed_data,
-            term_positions,
+            terms_string,
+            term_offsets,
+            sorted_terms,
+            term_entries,
             total_words: dictionary.total_words,
             total_documents: dictionary.total_documents,
             collection_size_bytes: dictionary.collection_size_bytes,
@@ -427,20 +328,37 @@ impl CompressedDictionary {
         }
     }
 
-    /// Get a term by looking it up in the compressed data
+    /// Get a term by binary search in the sorted terms
     pub fn get_term(&self, term: &str) -> Option<String> {
-        // For now, we can use the term_positions map which contains the original terms
-        // In a full implementation, you'd decompress from the compressed_terms_data
-        if self.term_positions.contains_key(term) {
-            Some(term.to_string())
-        } else {
-            None
+        match self.sorted_terms.binary_search(&term.to_string()) {
+            Ok(index) => {
+                let (prefix_start, prefix_len, suffix_start, suffix_len) = self.term_offsets[index];
+
+                if suffix_start == 0 && suffix_len == 0 {
+                    // Non-compressed term: prefix_start is actually term start, prefix_len is term length
+                    Some(self.terms_string[prefix_start..prefix_start + prefix_len].to_string())
+                } else {
+                    // Front-packed term: reconstruct from prefix + suffix
+                    let prefix = &self.terms_string[prefix_start..prefix_start + prefix_len];
+                    let suffix = &self.terms_string[suffix_start..suffix_start + suffix_len];
+                    Some(format!("{}{}", prefix, suffix))
+                }
+            }
+            Err(_) => None,
         }
     }
 
-    /// Check if a term exists in the compressed dictionary
+    /// Check if a term exists using binary search
     pub fn contains_term(&self, term: &str) -> bool {
-        self.term_positions.contains_key(term)
+        self.sorted_terms.binary_search(&term.to_string()).is_ok()
+    }
+
+    /// Get term entry by binary search
+    pub fn get_term_entry(&self, term: &str) -> Option<&TermEntry> {
+        match self.sorted_terms.binary_search(&term.to_string()) {
+            Ok(index) => self.term_entries.get(index),
+            Err(_) => None,
+        }
     }
 
     /// Get compression statistics
@@ -455,43 +373,25 @@ impl CompressedDictionary {
 
     /// Get dictionary size (number of unique terms)
     pub fn dictionary_size(&self) -> usize {
-        self.terms.len()
+        self.sorted_terms.len()
     }
 
-    /// Extract all terms from compressed dictionary (parallel processing)
+    /// Extract all terms from compressed dictionary (already sorted)
     pub fn extract_terms_parallel(&self) -> Vec<String> {
-        // Extract from term_positions for now - in full implementation would decompress
-        let mut terms: Vec<String> = self.term_positions.keys().cloned().collect();
-        
-        // Use parallel sort for large dictionaries
-        if terms.len() > 10000 {
-            terms.par_sort_unstable();
-        } else {
-            terms.sort_unstable();
-        }
-        
-        terms
+        self.sorted_terms.clone()
     }
 
     /// Extract terms sorted by frequency (parallel processing)
     pub fn extract_terms_by_frequency_parallel(&self) -> Vec<(String, u32)> {
-        if self.terms.is_empty() {
+        if self.sorted_terms.is_empty() {
             return Vec::new();
         }
 
-        // Get terms with their frequencies
-        let mut term_frequencies: Vec<(String, u32)> = self.term_positions
-            .keys()
-            .filter_map(|term| {
-                // Find the term entry using the term_positions mapping
-                // This is a simplified approach - in practice you'd use proper indexing
-                for (_, entry) in &self.terms {
-                    if self.term_positions.contains_key(term) {
-                        return Some((term.clone(), entry.frequency));
-                    }
-                }
-                None
-            })
+        // Create term-frequency pairs using parallel arrays
+        let mut term_frequencies: Vec<(String, u32)> = self.sorted_terms
+            .iter()
+            .zip(self.term_entries.iter())
+            .map(|(term, entry)| (term.clone(), entry.frequency))
             .collect();
 
         // Use parallel sort for large datasets
@@ -507,12 +407,21 @@ impl CompressedDictionary {
     /// Memory size of the compressed dictionary
     pub fn memory_size(&self) -> usize {
         std::mem::size_of::<Self>()
-            + self.terms.iter().map(|(_, entry)| {
-                std::mem::size_of::<usize>() + std::mem::size_of::<TermEntry>() 
-                    + entry.documents.len() * (std::mem::size_of::<String>() + 16) // approximate string overhead
+            + self.terms_string.len()
+            + self.term_offsets.len() * std::mem::size_of::<(usize, usize, usize, usize)>()
+            + self.sorted_terms.iter().map(|s| s.len()).sum::<usize>()
+            + self.term_entries.iter().map(|entry| {
+                std::mem::size_of::<TermEntry>()
+                    + entry.documents.len() * (std::mem::size_of::<String>() + 16)
             }).sum::<usize>()
-            + self.compressed_terms_data.len()
-            + self.term_positions.iter().map(|(k, _)| k.len() + 16).sum::<usize>()
+    }
+
+    /// Save compressed dictionary as JSON
+    pub fn save_as_json(&self, path: &str) -> Result<usize, Box<dyn std::error::Error>> {
+        let json = serde_json::to_string_pretty(self)?;
+        let size = json.len();
+        fs::write(path, json)?;
+        Ok(size)
     }
 
     /// Save compressed dictionary as binary
@@ -527,7 +436,7 @@ impl CompressedDictionary {
     pub fn save_as_text(&self, path: &str) -> Result<usize, Box<dyn std::error::Error>> {
         let mut file = std::fs::File::create(path)?;
         let (original_size, compressed_size, ratio) = self.compression_stats();
-        
+
         let header = format!(
             "COMPRESSED DICTIONARY STATISTICS\n\
              Total terms: {}\n\
@@ -572,7 +481,7 @@ mod tests {
     fn test_dictionary_compression() {
         // Create a test dictionary
         let mut dict = Dictionary::new();
-        
+
         // Add test terms with common prefixes (good for front-packing)
         let test_terms = vec![
             ("computer", "doc1.txt"),
@@ -586,33 +495,37 @@ mod tests {
             ("retrieval", "doc9.txt"),
             ("retrieve", "doc10.txt"),
         ];
-        
+
         for (term, doc) in test_terms {
             dict.add_term(term.to_string(), doc.to_string());
         }
-        
-        let original_size = dict.terms_string.len();
+
+        let original_size = dict.terms.keys().map(|k| k.len()).sum::<usize>();
         assert_eq!(dict.dictionary_size(), 10);
-        
+
         // Compress the dictionary
         let compressed = CompressedDictionary::from_dictionary(&dict);
         let (orig_size, comp_size, ratio) = compressed.compression_stats();
-        
+
         // Verify compression occurred
         assert_eq!(orig_size, original_size);
         assert!(comp_size < orig_size, "Compressed size should be smaller than original");
         assert!(ratio < 1.0, "Compression ratio should be less than 1.0");
-        
-        // Test term lookup
+
+        // Test term lookup with binary search
         assert!(compressed.contains_term("computer"));
         assert!(compressed.contains_term("computing"));
         assert!(compressed.contains_term("information"));
         assert!(!compressed.contains_term("nonexistent"));
-        
+
         // Test term retrieval
         assert_eq!(compressed.get_term("computer"), Some("computer".to_string()));
         assert_eq!(compressed.get_term("nonexistent"), None);
-        
+
+        // Test term entry retrieval
+        assert!(compressed.get_term_entry("computer").is_some());
+        assert!(compressed.get_term_entry("nonexistent").is_none());
+
         // Verify dictionary size matches
         assert_eq!(compressed.dictionary_size(), dict.dictionary_size());
     }
@@ -626,47 +539,54 @@ mod tests {
             "computer".to_string(),
             "computing".to_string(),
         ];
-        
-        let (compressed_data, term_positions) = compress_terms(terms.clone());
-        
-        // Verify all terms are in positions map
-        for term in &terms {
-            assert!(term_positions.contains_key(term));
+
+        let (concatenated_string, term_offsets) = compress_terms_to_string(terms.clone());
+
+        // Verify we have offsets for all terms
+        assert_eq!(term_offsets.len(), terms.len());
+
+        // Verify concatenated string is not empty
+        assert!(!concatenated_string.is_empty());
+
+        // Verify we can extract terms using offsets
+        for (_, &(prefix_start, prefix_len, suffix_start, suffix_len)) in term_offsets.iter().enumerate() {
+            let extracted_term = if suffix_start == 0 && suffix_len == 0 {
+                // Non-compressed term
+                concatenated_string[prefix_start..prefix_start + prefix_len].to_string()
+            } else {
+                // Front-packed term
+                let prefix = &concatenated_string[prefix_start..prefix_start + prefix_len];
+                let suffix = &concatenated_string[suffix_start..suffix_start + suffix_len];
+                format!("{}{}", prefix, suffix)
+            };
+            assert!(terms.contains(&extracted_term));
         }
-        
-        // Verify compressed data is not empty
-        assert!(!compressed_data.is_empty());
-        
-        // Verify we can find terms
-        assert!(term_positions.contains_key("test"));
-        assert!(term_positions.contains_key("testing"));
-        assert!(term_positions.contains_key("computer"));
     }
 
     #[test]
     fn test_compressed_dictionary_parallel_methods() {
         let mut dict = Dictionary::new();
-        
+
         // Add many terms to test parallel processing
         for i in 0..2000 {
             dict.add_term(format!("term{:04}", i), format!("doc{}.txt", i % 100));
         }
-        
+
         let compressed = CompressedDictionary::from_dictionary(&dict);
-        
+
         // Test parallel term extraction
         let terms = compressed.extract_terms_parallel();
         assert_eq!(terms.len(), 2000);
-        
+
         // Verify terms are sorted
         for i in 1..terms.len() {
             assert!(terms[i-1] <= terms[i], "Terms should be sorted");
         }
-        
+
         // Test parallel frequency extraction
         let freq_terms = compressed.extract_terms_by_frequency_parallel();
         assert!(!freq_terms.is_empty());
-        
+
         // Verify frequency sorting (descending)
         for i in 1..freq_terms.len() {
             assert!(freq_terms[i-1].1 >= freq_terms[i].1, "Frequencies should be sorted descending");

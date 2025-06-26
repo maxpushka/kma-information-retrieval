@@ -2,7 +2,7 @@ use bit_vec::BitVec;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
-use crate::dictionary::Dictionary;
+use crate::dictionary::CompressedDictionary;
 use crate::query::{tokenize, QueryParser};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -13,12 +13,11 @@ pub struct IncidenceMatrix {
 }
 
 impl IncidenceMatrix {
-    pub fn from_dictionary(dictionary: &Dictionary) -> Self {
-        let mut terms = dictionary.extract_terms_parallel();
-        terms.sort();
+    pub fn from_dictionary(dictionary: &CompressedDictionary) -> Self {
+        let terms = dictionary.extract_terms_parallel();
 
         let mut documents: HashSet<String> = HashSet::new();
-        for term_entry in dictionary.terms.values() {
+        for term_entry in &dictionary.term_entries {
             for doc in &term_entry.documents {
                 documents.insert(doc.clone());
             }
@@ -29,10 +28,7 @@ impl IncidenceMatrix {
         let mut matrix = Vec::new();
         for term in &terms {
             let mut row = BitVec::from_elem(documents.len(), false);
-            let start_pos = dictionary.terms.keys()
-                .find(|&&pos| dictionary.get_term(pos).unwrap() == term);
-            if let Some(&pos) = start_pos {
-                let term_entry = &dictionary.terms[&pos];
+            if let Some(term_entry) = dictionary.get_term_entry(term) {
                 for doc in &term_entry.documents {
                     if let Some(doc_idx) = documents.iter().position(|d| d == doc) {
                         row.set(doc_idx, true);

@@ -1,4 +1,4 @@
-use crate::{Dictionary, CompressedDictionary};
+use crate::CompressedDictionary;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -16,10 +16,10 @@ impl TrigramIndex {
         }
     }
 
-    pub fn from_dictionary(dictionary: &Dictionary) -> Self {
+    pub fn from_dictionary(dictionary: &CompressedDictionary) -> Self {
         println!(
             "      TrigramIndex: Processing {} terms in parallel",
-            dictionary.terms.len()
+            dictionary.sorted_terms.len()
         );
 
         let index = Arc::new(Mutex::new(HashMap::new()));
@@ -36,13 +36,13 @@ impl TrigramIndex {
                 let mut local_trigrams = HashMap::new();
 
                 // Generate trigrams for this chunk locally (no mutex contention)
-                for term in *chunk {
+                for term in chunk.iter() {
                     let trigrams = Self::generate_trigrams_static(term);
                     for trigram in trigrams {
                         local_trigrams
                             .entry(trigram)
                             .or_insert_with(HashSet::new)
-                            .insert(term.clone());
+                            .insert((*term).clone());
                     }
                 }
 
@@ -78,7 +78,7 @@ impl TrigramIndex {
     pub fn from_compressed_dictionary(dictionary: &CompressedDictionary) -> Self {
         println!(
             "      TrigramIndex: Processing {} terms in parallel",
-            dictionary.terms.len()
+            dictionary.sorted_terms.len()
         );
 
         let index = Arc::new(Mutex::new(HashMap::new()));
@@ -101,7 +101,7 @@ impl TrigramIndex {
                         local_trigrams
                             .entry(trigram)
                             .or_insert_with(HashSet::new)
-                            .insert(term.clone());
+                            .insert((*term).clone());
                     }
                 }
 
@@ -335,7 +335,7 @@ impl TrigramIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dictionary::Dictionary;
+    use crate::dictionary::{Dictionary, CompressedDictionary};
 
     #[test]
     fn test_trigram_generation() {
@@ -354,7 +354,8 @@ mod tests {
         dict.add_term("help".to_string(), "doc1".to_string());
         dict.add_term("world".to_string(), "doc1".to_string());
 
-        let trigram_index = TrigramIndex::from_dictionary(&dict);
+        let compressed_dict = CompressedDictionary::from_dictionary(&dict);
+        let trigram_index = TrigramIndex::from_dictionary(&compressed_dict);
 
         let results = trigram_index.find_matching_terms("hel*");
         assert!(results.contains("hello"));
@@ -369,7 +370,8 @@ mod tests {
         dict.add_term("test".to_string(), "doc1".to_string());
         dict.add_term("contest".to_string(), "doc1".to_string());
 
-        let trigram_index = TrigramIndex::from_dictionary(&dict);
+        let compressed_dict = CompressedDictionary::from_dictionary(&dict);
+        let trigram_index = TrigramIndex::from_dictionary(&compressed_dict);
 
         let results = trigram_index.find_matching_terms("*est*");
         assert!(results.contains("testing"));
