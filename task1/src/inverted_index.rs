@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use rayon::prelude::*;
 
-use crate::dictionary::Dictionary;
+use crate::dictionary::{Dictionary, CompressedDictionary};
 use crate::query::{tokenize, QueryParser};
 
 /// Variable-Byte encoding utilities for compressing document IDs
@@ -346,6 +346,68 @@ impl CompressedInvertedIndex {
         // Build regular index first, then compress
         let regular_index = InvertedIndex::from_dictionary(dictionary);
         Self::from_inverted_index(&regular_index)
+    }
+    
+    /// Create compressed inverted index from compressed dictionary
+    pub fn from_compressed_dictionary(dictionary: &CompressedDictionary) -> Self {
+        println!("CompressedInvertedIndex: Creating compressed index from compressed dictionary...");
+        
+        // Use parallel processing for large dictionaries
+        const PARALLEL_THRESHOLD: usize = 1000;
+        
+        if dictionary.terms.len() < PARALLEL_THRESHOLD {
+            // Sequential processing for small dictionaries
+            let mut index = HashMap::new();
+            let mut documents = HashSet::new();
+
+            for (&start_pos, term_entry) in &dictionary.terms {
+                if let Some(term) = dictionary.get_term(start_pos) {
+                    index.insert(term.to_string(), term_entry.documents.clone());
+                    for doc in &term_entry.documents {
+                        documents.insert(doc.clone());
+                    }
+                }
+            }
+
+            let mut documents: Vec<String> = documents.into_iter().collect();
+            documents.sort();
+            
+            let regular_index = InvertedIndex { index, documents };
+            Self::from_inverted_index(&regular_index)
+        } else {
+            // Parallel processing for large dictionaries
+            let term_entries: Vec<_> = dictionary.terms.iter().collect();
+            
+            // Build index in parallel
+            let index: HashMap<String, HashSet<String>> = term_entries
+                .par_iter()
+                .filter_map(|(&start_pos, term_entry)| {
+                    if let Some(term) = dictionary.get_term(start_pos) {
+                        Some((term.to_string(), term_entry.documents.clone()))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            // Collect all unique documents in parallel
+            let all_docs: HashSet<String> = term_entries
+                .par_iter()
+                .flat_map(|(_, term_entry)| term_entry.documents.par_iter().cloned())
+                .collect();
+
+            let mut documents: Vec<String> = all_docs.into_iter().collect();
+            
+            // Use parallel sort for large document collections
+            if documents.len() > 10000 {
+                documents.par_sort_unstable();
+            } else {
+                documents.sort_unstable();
+            }
+
+            let regular_index = InvertedIndex { index, documents };
+            Self::from_inverted_index(&regular_index)
+        }
     }
 
     /// Decompress posting list for a specific term

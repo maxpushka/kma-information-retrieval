@@ -1,4 +1,4 @@
-use crate::Dictionary;
+use crate::{Dictionary, CompressedDictionary};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -37,6 +37,65 @@ impl TrigramIndex {
 
                 // Generate trigrams for this chunk locally (no mutex contention)
                 for term in *chunk {
+                    let trigrams = Self::generate_trigrams_static(term);
+                    for trigram in trigrams {
+                        local_trigrams
+                            .entry(trigram)
+                            .or_insert_with(HashSet::new)
+                            .insert(term.clone());
+                    }
+                }
+
+                // Merge local results into global index (minimal mutex time)
+                if let Ok(mut global_index) = index.lock() {
+                    for (trigram, terms_set) in local_trigrams {
+                        global_index
+                            .entry(trigram)
+                            .or_insert_with(HashSet::new)
+                            .extend(terms_set);
+                    }
+                }
+
+                let processed = (chunk_idx + 1) * chunk_size;
+                if processed % 5000 == 0 || chunk_idx == chunks.len() - 1 {
+                    println!(
+                        "      TrigramIndex: Processed ~{} terms",
+                        processed.min(terms.len())
+                    );
+                }
+            });
+
+        let final_index = Arc::try_unwrap(index).unwrap().into_inner().unwrap();
+        println!(
+            "      TrigramIndex: Complete - {} terms, {} trigrams",
+            terms.len(),
+            final_index.len()
+        );
+
+        TrigramIndex { index: final_index }
+    }
+    
+    pub fn from_compressed_dictionary(dictionary: &CompressedDictionary) -> Self {
+        println!(
+            "      TrigramIndex: Processing {} terms in parallel",
+            dictionary.terms.len()
+        );
+
+        let index = Arc::new(Mutex::new(HashMap::new()));
+        let terms = dictionary.extract_terms_parallel();
+
+        // Process terms in parallel chunks
+        let chunk_size = 1000;
+        let chunks: Vec<_> = terms.chunks(chunk_size).collect();
+
+        chunks
+            .par_iter()
+            .enumerate()
+            .for_each(|(chunk_idx, chunk)| {
+                let mut local_trigrams = HashMap::new();
+
+                // Generate trigrams for this chunk locally (no mutex contention)
+                for term in chunk.iter() {
                     let trigrams = Self::generate_trigrams_static(term);
                     for trigram in trigrams {
                         local_trigrams

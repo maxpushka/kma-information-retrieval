@@ -1,4 +1,4 @@
-use crate::Dictionary;
+use crate::{Dictionary, CompressedDictionary};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -75,6 +75,49 @@ impl SuffixTree {
         // Extract the tree from Arc<Mutex<>>
         Arc::try_unwrap(tree).unwrap().into_inner().unwrap()
     }
+    
+    pub fn from_compressed_dictionary(dictionary: &CompressedDictionary) -> Self {
+        println!(
+            "      SuffixTree: Processing {} terms in parallel",
+            dictionary.terms.len()
+        );
+
+        let tree = Arc::new(Mutex::new(SuffixTree::new()));
+        let terms = dictionary.extract_terms_parallel();
+
+        // Process terms in parallel chunks for better progress reporting
+        let chunk_size = 1000;
+        let chunks: Vec<_> = terms.chunks(chunk_size).collect();
+
+        chunks.par_iter().enumerate().for_each(|(chunk_idx, chunk)| {
+            // Build local suffix trees for this chunk
+            let mut local_tree = SuffixTree::new();
+            for term in chunk.iter() {
+                local_tree.add_term(term);
+            }
+
+            // Merge local tree into global tree
+            if let Ok(mut global_tree) = tree.lock() {
+                Self::merge_trees(&mut global_tree.root, &local_tree.root);
+            }
+
+            let processed = (chunk_idx + 1) * chunk_size;
+            if processed % 5000 == 0 || chunk_idx == chunks.len() - 1 {
+                println!(
+                    "      SuffixTree: Processed ~{} terms",
+                    processed.min(terms.len())
+                );
+            }
+        });
+
+        println!(
+            "      SuffixTree: Complete - {} terms processed",
+            terms.len()
+        );
+
+        // Extract the tree from Arc<Mutex<>>
+        Arc::try_unwrap(tree).unwrap().into_inner().unwrap()
+    }
 
     fn add_term(&mut self, term: &str) {
         let term_chars: Vec<char> = term.chars().collect();
@@ -97,6 +140,20 @@ impl SuffixTree {
         }
 
         current.is_terminal = true;
+    }
+    
+    fn merge_trees(global: &mut SuffixNode, local: &SuffixNode) {
+        // Merge terms
+        global.terms.extend(local.terms.iter().cloned());
+        global.is_terminal = global.is_terminal || local.is_terminal;
+        
+        // Merge children
+        for (ch, local_child) in &local.children {
+            let global_child = global.children
+                .entry(*ch)
+                .or_insert_with(|| Box::new(SuffixNode::new()));
+            Self::merge_trees(global_child, local_child);
+        }
     }
 
     pub fn find_matching_terms(&self, pattern: &str) -> HashSet<String> {

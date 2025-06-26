@@ -1,4 +1,4 @@
-use crate::{Dictionary, CompressedInvertedIndex, PermutationIndex, QueryParser, SuffixTree, TrigramIndex};
+use crate::{Dictionary, CompressedDictionary, CompressedInvertedIndex, PermutationIndex, QueryParser, SuffixTree, TrigramIndex};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -9,31 +9,36 @@ pub struct WildcardSearchEngine {
     suffix_tree: SuffixTree,
     permutation_index: PermutationIndex,
     trigram_index: TrigramIndex,
-    dictionary: Dictionary,
+    dictionary: CompressedDictionary,
 }
 
 impl WildcardSearchEngine {
     pub fn from_dictionary(dictionary: Dictionary) -> Self {
+        let compressed_dict = CompressedDictionary::from_dictionary(&dictionary);
+        Self::from_compressed_dictionary(compressed_dict)
+    }
+    
+    pub fn from_compressed_dictionary(dictionary: CompressedDictionary) -> Self {
         println!("  WildcardSearchEngine: Starting construction");
 
         println!("  WildcardSearchEngine: Building inverted index...");
         let start = std::time::Instant::now();
-        let inverted_index = CompressedInvertedIndex::from_dictionary(&dictionary);
+        let inverted_index = CompressedInvertedIndex::from_compressed_dictionary(&dictionary);
         println!("    Inverted index built in {:.2?}", start.elapsed());
 
         println!("  WildcardSearchEngine: Building suffix tree...");
         let start = std::time::Instant::now();
-        let suffix_tree = SuffixTree::from_dictionary(&dictionary);
+        let suffix_tree = SuffixTree::from_compressed_dictionary(&dictionary);
         println!("    Suffix tree built in {:.2?}", start.elapsed());
 
         println!("  WildcardSearchEngine: Building permutation index...");
         let start = std::time::Instant::now();
-        let permutation_index = PermutationIndex::from_dictionary(&dictionary);
+        let permutation_index = PermutationIndex::from_compressed_dictionary(&dictionary);
         println!("    Permutation index built in {:.2?}", start.elapsed());
 
         println!("  WildcardSearchEngine: Building trigram index...");
         let start = std::time::Instant::now();
-        let trigram_index = TrigramIndex::from_dictionary(&dictionary);
+        let trigram_index = TrigramIndex::from_compressed_dictionary(&dictionary);
         println!("    Trigram index built in {:.2?}", start.elapsed());
 
         println!("  WildcardSearchEngine: Construction complete");

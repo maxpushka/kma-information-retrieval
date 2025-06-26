@@ -1,4 +1,4 @@
-use crate::Dictionary;
+use crate::{Dictionary, CompressedDictionary};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -17,6 +17,62 @@ impl PermutationIndex {
     }
 
     pub fn from_dictionary(dictionary: &Dictionary) -> Self {
+        println!(
+            "      PermutationIndex: Processing {} terms in parallel",
+            dictionary.terms.len()
+        );
+
+        let index = Arc::new(Mutex::new(HashMap::new()));
+        let terms = dictionary.extract_terms_parallel();
+
+        // Process terms in parallel chunks
+        let chunk_size = 1000;
+        let chunks: Vec<_> = terms.chunks(chunk_size).collect();
+
+        chunks
+            .par_iter()
+            .enumerate()
+            .for_each(|(chunk_idx, chunk)| {
+                let mut local_rotations = HashMap::new();
+
+                // Generate rotations for this chunk locally (no mutex contention)
+                for term in chunk.iter() {
+                    let rotations = Self::generate_rotations_static(term);
+                    for rotation in rotations {
+                        local_rotations
+                            .entry(rotation)
+                            .or_insert_with(HashSet::new)
+                            .insert(term.clone());
+                    }
+                }
+
+                // Progress reporting
+                if chunk_idx % 10 == 0 {
+                    println!(
+                        "        PermutationIndex: Processed chunk {}/{}",
+                        chunk_idx + 1,
+                        chunks.len()
+                    );
+                }
+
+                // Merge local results into global index (minimize mutex contention)
+                let mut global_index = index.lock().unwrap();
+                for (rotation, terms_set) in local_rotations {
+                    global_index
+                        .entry(rotation)
+                        .or_insert_with(HashSet::new)
+                        .extend(terms_set);
+                }
+            });
+
+        println!("      PermutationIndex: Completed processing");
+
+        PermutationIndex {
+            index: Arc::try_unwrap(index).unwrap().into_inner().unwrap(),
+        }
+    }
+    
+    pub fn from_compressed_dictionary(dictionary: &CompressedDictionary) -> Self {
         println!(
             "      PermutationIndex: Processing {} terms in parallel",
             dictionary.terms.len()
